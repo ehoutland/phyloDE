@@ -32,9 +32,15 @@
 #' discovery rate.
 #'
 #' @inheritParams phylolmFit
+#' @param object a matrix of normalized log2 expression (genes by samples), or a
+#' \code{SpeciesStats} object from \code{\link{speciesStats}} (e.g. with
+#' \code{method = "edgeR"}, for read-depth-aware, species-specific standard errors).
+#' A matrix is passed to \code{\link{speciesStats}} with \code{method = "limma"}.
 #' @param phy the species tree (one tip per species), dated and ultrametric.
 #' @param model the phylogenetic model of the drift: \code{"BM"} (the default) or
 #' \code{"OUfixedRoot"}.
+#' @param covariates optional sample-level covariates, see \code{\link{speciesStats}}
+#' (ignored if \code{object} is a \code{SpeciesStats} object).
 #' @param rho_prime_grid for the OU model, the values of \eqn{\rho'} of the OU
 #' drift patterns (the BM drift pattern is always included).
 #' @param shift_ratios ratios of the shift variance to the drift variance (at the tips)
@@ -70,39 +76,37 @@
 phyloMash <- function(object, phy, col_species = NULL, model = c("BM", "OUfixedRoot"),
                       rho_prime_grid = c(0.1, 0.5), shift_ratios = c(1, 4, 16, 64), min_shift_ratio = 4,
                       noise_ratios = c(0.25, 1, 4), identity = TRUE, trend = TRUE, n_grid = 15,
-                      fit_subset = NULL, ...) {
+                      fit_subset = NULL, covariates = NULL, ...) {
   if (!requireNamespace("mashr", quietly = TRUE)) stop("Package 'mashr' is needed for function 'phyloMash'.")
   model <- match.arg(model)
-  y <- check_expression_matrix(object)
-  Y <- y$exprs
-  if (is.null(col_species)) col_species <- parse_species(phy, colnames(Y))
-  if (!all(col_species %in% phy$tip.label)) stop("Some species in `col_species` are not in the tree.")
   if (!ape::is.ultrametric(phy)) stop("The tree must be ultrametric.")
-  sp <- factor(col_species, levels = phy$tip.label)
-  if (any(table(sp) == 0)) stop("All the species of the tree must have samples.")
-  S <- nlevels(sp); r <- as.vector(table(sp)); n <- ncol(Y); G <- nrow(Y)
-  if (n - S < 2) stop("At least two species must have replicates to estimate the within-species variance.")
-  if (any(r == 1)) message("Species with a single sample: ", paste(levels(sp)[r == 1], collapse = ", "), ". Their within-species variance is taken from the other species (pooled).")
+  if (inherits(object, "SpeciesStats")) {
+    stats <- object
+  } else {
+    y <- check_expression_matrix(object)
+    if (is.null(col_species)) col_species <- parse_species(phy, colnames(y$exprs))
+    stats <- speciesStats(y$exprs, col_species = col_species, method = "limma", covariates = covariates, trend = trend)
+  }
+  if (!all(stats$species %in% phy$tip.label)) stop("Some species of the data are not in the tree.")
+  if (!all(phy$tip.label %in% stats$species)) stop("All the species of the tree must have samples.")
+  ord <- match(phy$tip.label, stats$species)
+  M <- stats$mean[, ord, drop = FALSE]; SE <- stats$se[, ord, drop = FALSE]
+  species <- phy$tip.label
+  S <- length(species); G <- nrow(M)
+  df <- stats$df
+  if (length(df) > 1) df <- matrix(df, G, S - 1)
 
-  ## sufficient statistics
-  M <- t(apply(Y, 1, function(v) tapply(v, sp, mean)))
-  colnames(M) <- levels(sp)
-  resid <- Y - M[, as.integer(sp), drop = FALSE]
-  s2w <- rowSums(resid^2) / (n - S)
-  sq <- if (trend) limma::squeezeVar(s2w, df = n - S, covariate = rowMeans(Y)) else limma::squeezeVar(s2w, df = n - S)
-  s2post <- sq$var.post
-  df <- n - S + if (is.finite(sq$df.prior)) sq$df.prior else 0
-
-  ## contrasts: deviations from the unweighted across-species mean
-  L <- mashr::contrast_matrix(S, "mean", levels(sp))
-  CL <- L %*% diag(1 / r) %*% t(L)
+  ## contrasts: deviations from the unweighted across-species mean, with gene- and species-specific errors
+  L <- mashr::contrast_matrix(S, "mean", species)
   Bhat <- M %*% t(L)
-  Shat <- sqrt(s2post) %*% t(sqrt(diag(CL)))
+  Shat <- sqrt(SE^2 %*% t(L^2))
+  ## null correlation of the contrasts: depends on the gene through SE; use the average measurement variances
+  CL <- L %*% diag(colMeans(SE^2) / mean(SE^2)) %*% t(L)
   V <- stats::cov2cor(CL)
   data <- mashr::mash_set_data(Bhat, Shat, df = df, V = V)
 
   ## covariance patterns in species space, mapped to the contrast space
-  bi <- branchIndicators(phy, levels(sp))
+  bi <- branchIndicators(phy, species)
   keep <- bi$branches$testable
   Zs <- bi$Z[, keep, drop = FALSE]
   branches <- bi$branches[keep, ]
@@ -154,17 +158,17 @@ phyloMash <- function(object, phy, col_species = NULL, model = c("BM", "OUfixedR
   tag_w <- tag[base]; tag_w[base == "null"] <- "none"
   branch_prob <- sapply(labels, function(b) rowSums(w[, which(tag_w == b), drop = FALSE]))
   if (is.null(dim(branch_prob))) branch_prob <- matrix(branch_prob, nrow = G)
-  dimnames(branch_prob) <- list(rownames(Y), labels)
+  dimnames(branch_prob) <- list(stats$genes, labels)
   pi <- m$fitted_g$pi
   pattern_weights <- tapply(pi, sub("\\.[0-9]+$", "", names(pi)), sum)
   pmc <- ashr::get_pm(m)
-  pm_species <- cbind(pmc, -rowSums(pmc)); colnames(pm_species) <- levels(sp)
+  pm_species <- cbind(pmc, -rowSums(pmc)); colnames(pm_species) <- species
 
   res <- list(mash = m, branch_prob = branch_prob, shift_prob = rowSums(branch_prob),
               top_branch = labels[max.col(branch_prob, ties.method = "first")],
-              pm_species = pm_species, species_means = M, se_species = sqrt(s2post) %*% t(1 / sqrt(r)),
+              pm_species = pm_species, species_means = M, se_species = SE, dropout = stats$dropout[, ord, drop = FALSE],
               pattern_weights = pattern_weights, branches = branches, L = L, df = df,
-              model = model, phy = phy, col_species = col_species, genes = rownames(Y))
+              model = model, phy = phy, stats_method = stats$method, genes = stats$genes)
   class(res) <- "PhyloMash"
   return(res)
 }

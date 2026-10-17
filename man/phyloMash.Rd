@@ -17,12 +17,15 @@ phyloMash(
   trend = TRUE,
   n_grid = 15,
   fit_subset = NULL,
+  covariates = NULL,
   ...
 )
 }
 \arguments{
-\item{object}{a matrix data object containing normalized expression values,
-with rows corresponding to genes and columns to samples (species).}
+\item{object}{a matrix of normalized log2 expression (genes by samples), or a
+\code{SpeciesStats} object from \code{\link{speciesStats}} (e.g. with
+\code{method = "edgeR"}, for read-depth-aware, species-specific standard errors).
+A matrix is passed to \code{\link{speciesStats}} with \code{method = "limma"}.}
 
 \item{phy}{the species tree (one tip per species), dated and ultrametric.}
 
@@ -54,6 +57,9 @@ variances allows for a mean-variance trend (\code{\link[limma]{squeezeVar}} with
 \item{fit_subset}{if not \code{NULL}, the number of (randomly chosen) genes used to
 estimate the mixture weights, which are then applied to all genes
 (faster for large data sets).}
+
+\item{covariates}{optional sample-level covariates, see \code{\link{speciesStats}}
+(ignored if \code{object} is a \code{SpeciesStats} object).}
 
 \item{...}{further arguments passed to \code{\link[mashr]{mash}}.}
 }
