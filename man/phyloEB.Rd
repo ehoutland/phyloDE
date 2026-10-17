@@ -85,6 +85,7 @@ An object of class \code{\link{PhyloEBModel-class}}, a list with components
 \item{lambda, rho_prime, rho, alpha}{the gene-wise posterior means.}
 \item{cell}{the index of the grid point nearest to the gene-wise posterior mean.}
 \item{map}{the index of the gene-wise maximum a posteriori grid point.}
+\item{mle}{the index of the gene-wise maximum likelihood grid point (no pooling across genes).}
 \item{logml}{the gene-wise log marginal likelihood under the fitted prior.}
 \item{loglik_max}{the gene-wise maximum of the profile log-likelihood over the grid.}
 }

@@ -80,8 +80,9 @@ phyloMash <- function(object, phy, col_species = NULL, model = c("BM", "OUfixedR
   if (!ape::is.ultrametric(phy)) stop("The tree must be ultrametric.")
   sp <- factor(col_species, levels = phy$tip.label)
   if (any(table(sp) == 0)) stop("All the species of the tree must have samples.")
-  if (any(table(sp) < 2)) stop("All species must have at least two replicates to estimate the within-species variance.")
   S <- nlevels(sp); r <- as.vector(table(sp)); n <- ncol(Y); G <- nrow(Y)
+  if (n - S < 2) stop("At least two species must have replicates to estimate the within-species variance.")
+  if (any(r == 1)) message("Species with a single sample: ", paste(levels(sp)[r == 1], collapse = ", "), ". Their within-species variance is taken from the other species (pooled).")
 
   ## sufficient statistics
   M <- t(apply(Y, 1, function(v) tapply(v, sp, mean)))

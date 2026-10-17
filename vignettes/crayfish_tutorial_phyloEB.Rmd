@@ -1,0 +1,382 @@
+---
+title: "Crayfish Tutorial, Empirical Bayes Edition"
+output:
+  rmarkdown::html_vignette:
+    toc: true
+    fig_width: 7
+    fig_height: 4.5
+vignette: >
+  %\VignetteIndexEntry{Crayfish Tutorial, Empirical Bayes Edition}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+required <- c("edgeR", "ggplot2", "patchwork", "scico", "rcartocolor", "Polychrome", "mashr")
+evalChunks <- all(unlist(lapply(required, function(pkg) requireNamespace(pkg, quietly = TRUE))))
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>", eval = evalChunks,
+                      fig.align = "center", dpi = 110, message = FALSE, warning = FALSE)
+```
+
+This vignette replays the [original crayfish tutorial](crayfish_exemple_tutorial.html)
+with the empirical Bayes (EB) machinery of the `phyloEB` branch:
+
+* `phyloEB()` replaces the consensus tree by gene-wise, regularized phylogenetic
+  parameters (shrunk across genes on a grid, with the exact profile likelihood);
+* `phylolmFit(..., eb_model = )` whitens each gene with its own regularized
+  correlation structure, then everything downstream is plain `limma`;
+* `phyloMash()` goes beyond the two-condition design and looks for
+  branch-specific (species-specific) shifts with `mash`.
+
+Colours follow a single convention throughout: `scico` *batlow* for sequential
+quantities, `scico` *vik* for diverging ones (centered expression), `rcartocolor`
+*Safe* for small categorical sets and `Polychrome` *glasbey* for the 14 species.
+
+```{r setup}
+library(phyloDE)
+library(limma)
+library(ape)
+library(ggplot2)
+library(patchwork)
+theme_set(theme_minimal(base_size = 11))
+pal_safe <- rcartocolor::carto_pal(12, "Safe")
+pal_batlow <- function(n) scico::scico(n, palette = "batlow")
+pal_vik <- function(n) scico::scico(n, palette = "vik")
+set.seed(20200317)
+pal_species <- setNames(Polychrome::glasbey.colors(15)[-1], sort(unique(crayfish_species <- sub("(_|\\.).*$", "", colnames(phyloDE::crayfish$counts)))))
+```
+
+## Data
+
+The `crayfish` dataset (Stern & Crandall 2018[^1], re-analysed in Bastide et al. 2023[^2])
+has `r nrow(phyloDE::crayfish$counts)` orthologous genes measured in 34 samples from 14 species
+(1 to 3 replicates per species), a dated phylogeny, and a species-level condition:
+blind (0) or sighted (1). The first question is the one of the original tutorial:
+which genes shifted in parallel between blind and sighted species?
+
+```{r tree, fig.height=5, fig.width=6}
+data(crayfish)
+sight <- crayfish$sights$sights[match(crayfish$tree$tip.label, crayfish$sights$species)]
+cols_sight <- setNames(pal_safe[c(2, 1)], c("blind", "sighted"))
+plot(crayfish$tree, tip.color = cols_sight[ifelse(sight == 1, "sighted", "blind")], font = 2, label.offset = 0.01, edge.width = 2)
+legend("bottomleft", legend = names(cols_sight), text.col = cols_sight, bty = "n", text.font = 2)
+axisPhylo()
+```
+
+## Normalization and design
+
+TPM with TMM factors, log2, exactly as in the original tutorial, and the `~ sights` design.
+
+```{r}
+nf <- edgeR::calcNormFactors(crayfish$counts / crayfish$lengths, method = "TMM")
+norm_data <- lengthNormalizeRNASeq(crayfish$counts, crayfish$lengths, nf,
+                                   lengthNormalization = "TPM", dataTransformation = "log2")
+design <- model.matrix(~ sights, model.frame(crayfish$sights))
+species <- sub("(_|\\.).*$", "", colnames(norm_data))
+```
+
+## Heatmap with the phylogeny on the columns
+
+Row-centered log2 TPM (a diverging quantity, hence *vik*), columns ordered by the
+replicate tree, with the condition and the species as side bars.
+
+```{r heatmap, fig.height=7, fig.width=7}
+tree_rep <- addReplicatesOnTree(crayfish$tree, data.frame(species = species, id = colnames(norm_data)))
+dend_cols <- as.dendrogram(as.hclust(tree_rep))
+col_sight <- cols_sight[ifelse(design[, 2] == 1, "sighted", "blind")]
+phylo_heatmap <- function(mat, main = "") {
+  mat <- t(scale(t(mat), center = TRUE, scale = FALSE))
+  lim <- max(abs(mat))
+  heatmap(mat, Colv = dend_cols, scale = "none", col = pal_vik(101), breaks = seq(-lim, lim, length.out = 102),
+          ColSideColors = col_sight, margins = c(7, 5), cexCol = 0.7, main = main, labRow = if (nrow(mat) > 40) NA else rownames(mat))
+}
+phylo_heatmap(norm_data[1:400, ], main = "400 genes, row-centered log2 TPM")
+```
+
+(Side bar: blind species in rose, sighted species in blue.)
+
+## Gene-wise phylogenetic parameters with `phyloEB`
+
+The original tutorial fits an OU with measurement error on each gene with `phylolm`,
+then pools the parameters into one consensus tree (trimmed mean of the transformed
+parameters). `phyloEB` evaluates the REML profile likelihood of every gene on a grid of
+$(\rho', \lambda)$ values (closed form: one Cholesky per grid point), estimates a smooth
+prior across genes by maximum marginal likelihood, and returns each gene's posterior
+on the grid. The whole data set takes under a minute.
+
+```{r phyloEB}
+eb <- phyloEB(norm_data, design, phy = crayfish$tree, model = "OUfixedRoot")
+eb
+```
+
+The two parameters are those of the original tutorial: $\lambda$ is the share of the
+variance explained by the tree (0: independent samples, 1: no non-phylogenetic
+variance), and $\rho = 1 - \rho'$ is the percent decrease in variance due to the OU
+compared to a BM (0: BM, 1: star tree) (Cornuault 2022[^3]).
+
+### Population and gene-wise distributions
+
+Instead of histograms of gene-wise point estimates, we show densities. The *prior*
+is the estimated population distribution of the parameters across genes, with its
+50% and 90% intervals; the gene-wise *maximum likelihood* estimates (no pooling,
+what the original histograms show) pile up at the boundaries, while the *posterior
+means* are shrunk towards the population. The dashed line is the consensus value of
+the original tutorial.
+
+```{r prior-helpers}
+grid <- eb$grid
+bw <- 0.06
+marginal <- function(w, values) { u <- sort(unique(values)); data.frame(x = u, p = as.vector(tapply(w, factor(values, levels = u), sum))) }
+interval <- function(m, level) { cum <- cumsum(m$p); c(m$x[which(cum >= (1 - level) / 2)[1]], m$x[which(cum >= 1 - (1 - level) / 2)[1]]) }
+kde <- function(x, label, w = NULL) {
+  d <- if (is.null(w)) density(x, bw = bw, from = 0, to = 1) else density(x, weights = w, bw = bw, from = 0, to = 1)
+  data.frame(x = d$x, dens = d$y, what = label)
+}
+param_plot <- function(par, consensus, xlab) {
+  pr <- marginal(eb$prior, grid[[par]])
+  ci50 <- interval(pr, 0.5); ci90 <- interval(pr, 0.9)
+  curves <- rbind(kde(pr$x, "EB prior (population)", w = pr$p),
+                  kde(grid[[par]][eb$mle], "gene-wise MLE"),
+                  kde(eb[[par]], "EB posterior mean"))
+  curves$what <- factor(curves$what, levels = c("EB prior (population)", "gene-wise MLE", "EB posterior mean"))
+  ggplot() +
+    annotate("rect", xmin = ci90[1], xmax = ci90[2], ymin = -Inf, ymax = Inf, fill = pal_safe[3], alpha = 0.12) +
+    annotate("rect", xmin = ci50[1], xmax = ci50[2], ymin = -Inf, ymax = Inf, fill = pal_safe[3], alpha = 0.2) +
+    geom_line(data = curves, aes(x, dens, colour = what), linewidth = 0.9) +
+    geom_vline(xintercept = consensus, linetype = "dashed", colour = pal_safe[4], linewidth = 0.8) +
+    scale_colour_manual(values = c("EB prior (population)" = pal_safe[3], "gene-wise MLE" = pal_safe[1], "EB posterior mean" = pal_safe[2]), name = NULL) +
+    coord_cartesian(xlim = c(0, 1)) +
+    labs(x = xlab, y = "density", subtitle = sprintf("prior 50%%: [%.2f, %.2f], 90%%: [%.2f, %.2f]\nconsensus (dashed): %.2f", ci50[1], ci50[2], ci90[1], ci90[2], consensus)) +
+    theme(legend.position = "bottom")
+}
+```
+
+```{r consensus}
+ctree <- phylogeneticCorrelations(norm_data, design, phy = crayfish$tree, model = "OUfixedRoot")
+consensus <- getParameters(ctree)
+```
+
+```{r prior-plots, fig.height=5, fig.width=9}
+param_plot("lambda", consensus["lambda"], expression(lambda ~ "(phylogenetic share of the variance)")) +
+  param_plot("rho", consensus["rho"], expression(rho ~ "(variance decrease due to selection)")) +
+  plot_layout(guides = "collect") & theme(legend.position = "bottom")
+```
+
+(The consensus tree calls `phylolm` on every gene, which is where most of the compilation time of this vignette goes.)
+
+The joint distribution of the gene-wise posterior means, with the population (prior)
+mean and the consensus:
+
+```{r joint, fig.height=5, fig.width=6}
+kd <- MASS::kde2d(eb$lambda, eb$rho, h = c(0.08, 0.05), n = 150, lims = c(0, 1, 0.5, 1))
+kd_df <- data.frame(lambda = rep(kd$x, length(kd$y)), rho = rep(kd$y, each = length(kd$x)), density = as.vector(kd$z))
+ggplot(kd_df, aes(lambda, rho)) +
+  geom_raster(aes(fill = density)) +
+  geom_point(data = data.frame(lambda = eb$lambda, rho = eb$rho), alpha = 0.15, size = 0.4, colour = "white") +
+  annotate("point", x = getParameters(eb)["lambda"], y = getParameters(eb)["rho"], shape = 23, size = 4, fill = pal_safe[3], colour = "black") +
+  annotate("point", x = consensus["lambda"], y = consensus["rho"], shape = 24, size = 4, fill = pal_safe[4], colour = "black") +
+  scale_fill_gradientn(colours = pal_batlow(100), name = "density") +
+  coord_cartesian(xlim = c(0, 1), ylim = c(0.5, 1), expand = FALSE) +
+  labs(x = expression(lambda), y = expression(rho), subtitle = "gene-wise posterior means; diamond: EB prior mean, triangle: consensus")
+```
+
+## Differential expression between blind and sighted species
+
+`phylolmFit` with the EB model whitens each gene with its own regularized
+correlation structure (genes sharing a grid point share one Cholesky factor,
+so the fit takes a fraction of a second), and returns a `limma`-compatible object.
+
+```{r fit}
+pfit <- phylolmFit(norm_data, design, phy = crayfish$tree, model = "OUfixedRoot", eb_model = eb)
+pfit
+```
+
+Mean-variance trend (as in the original tutorial), then `eBayes` with a trend.
+
+```{r trend, fig.height=4, fig.width=5}
+trend_df <- data.frame(mean = pfit$Amean, sd = sqrt(pfit$sigma))
+lfit <- lowess(trend_df$mean, trend_df$sd, f = 0.5)
+ggplot(trend_df, aes(mean, sd)) +
+  geom_point(size = 0.4, alpha = 0.4, colour = pal_safe[12]) +
+  geom_line(data = data.frame(mean = lfit$x, sd = lfit$y), colour = pal_safe[2], linewidth = 1) +
+  labs(x = "mean log2(TPM)", y = "sqrt(standard deviation)", title = "Mean-variance trend")
+pfit <- eBayes(pfit, trend = TRUE)
+topTable(pfit, coef = 2)
+```
+
+### Credible intervals for individual genes
+
+The posterior of each gene on the grid gives credible intervals. Here, for the
+six most significant genes above, the marginal posterior
+densities of $\lambda$ and $\rho$ with their 90% intervals: with 14 species, individual
+genes are not very informative about their own parameters, and the shrinkage is
+substantial.
+
+```{r gene-posteriors, fig.height=4.5, fig.width=9}
+gene_posterior <- function(gene, par) {
+  w <- eb$posterior[gene, ]; m <- marginal(w, grid[[par]])
+  ci <- interval(m, 0.9); d <- kde(m$x, gene, w = m$p)
+  data.frame(gene = gene, par = par, x = d$x, dens = d$dens, lo = ci[1], hi = ci[2], mean = sum(m$x * m$p))
+}
+top_genes <- rownames(topTable(pfit, coef = 2))[1:6]
+post_df <- do.call(rbind, lapply(top_genes, function(g) rbind(gene_posterior(g, "lambda"), gene_posterior(g, "rho"))))
+post_df$gene <- factor(post_df$gene, levels = top_genes)
+ymax <- tapply(post_df$dens, post_df$par, max)
+ci_df <- unique(post_df[, c("gene", "par", "lo", "hi")]); ci_df$y <- -ymax[ci_df$par] * (0.06 + 0.06 * as.numeric(ci_df$gene))
+ggplot(post_df, aes(x, dens, colour = gene)) +
+  geom_line(linewidth = 0.8) +
+  geom_segment(data = ci_df, aes(x = lo, xend = hi, y = y, yend = y, colour = gene), linewidth = 2, inherit.aes = FALSE) +
+  facet_wrap(~ par, scales = "free_y", labeller = as_labeller(c(lambda = "lambda", rho = "rho"), label_parsed)) +
+  scale_colour_manual(values = pal_safe[seq_along(top_genes)], name = NULL) +
+  labs(x = NULL, y = "posterior density", subtitle = "marginal posteriors (kernel-smoothed); bars: 90% credible intervals") +
+  theme(legend.position = "bottom")
+```
+
+### Comparison with the consensus-tree analysis
+
+The same `eBayes` analysis with the consensus tree of the original tutorial
+(fitted on the same genes).
+
+```{r consensus-fit}
+pfit_cons <- eBayes(phylolmFit(norm_data, design, phy = crayfish$tree, model = "OUfixedRoot", consensus_tree = ctree), trend = TRUE)
+tt_eb <- topTable(pfit, coef = 2, number = Inf); tt_cons <- topTable(pfit_cons, coef = 2, number = Inf)
+data.frame(method = c("EB gene-wise parameters", "consensus tree"),
+           DE_at_5pct_FDR = c(sum(tt_eb$adj.P.Val < 0.05), sum(tt_cons$adj.P.Val < 0.05)),
+           DE_at_10pct_FDR = c(sum(tt_eb$adj.P.Val < 0.10), sum(tt_cons$adj.P.Val < 0.10)),
+           logLik = round(c(sum(logLikelihood(pfit)), sum(logLikelihood(pfit_cons)))))
+```
+
+```{r compare, fig.height=4.5, fig.width=5}
+cmp <- data.frame(eb = -log10(pfit$p.value[, 2]), cons = -log10(pfit_cons$p.value[, 2]),
+                  lambda = eb$lambda, sig = factor(ifelse(tt_eb[rownames(pfit), "adj.P.Val"] < 0.05, "FDR < 5% (EB)", "not significant")))
+ggplot(cmp, aes(cons, eb, colour = lambda)) +
+  geom_abline(linetype = "dashed", colour = "grey50") +
+  geom_point(size = 0.8, alpha = 0.8) +
+  scale_colour_gradientn(colours = pal_batlow(100), name = expression(lambda[EB])) +
+  labs(x = expression(-log[10] ~ p ~ "(consensus tree)"), y = expression(-log[10] ~ p ~ "(EB gene-wise)"),
+       subtitle = "genes with little phylogenetic signal gain, genes with a lot lose")
+```
+
+## Standard diagnostics
+
+```{r diagnostics, fig.height=4, fig.width=9}
+p_hist <- ggplot(data.frame(p = pfit$p.value[, 2]), aes(p)) +
+  geom_histogram(breaks = seq(0, 1, 0.05), fill = pal_safe[12], colour = "white") +
+  labs(x = "p-value (sights)", y = "genes", title = "p-values")
+md <- data.frame(A = pfit$Amean, M = pfit$coefficients[, 2], sig = cmp$sig)
+p_md <- ggplot(md, aes(A, M, colour = sig)) +
+  geom_point(size = 0.6, alpha = 0.7) +
+  geom_hline(yintercept = 0, colour = pal_safe[2]) +
+  scale_colour_manual(values = c(pal_safe[1], "grey60"), name = NULL) +
+  labs(x = "average log2(TPM)", y = "log2 fold change (sighted - blind)", title = "MD plot") +
+  theme(legend.position = "bottom")
+p_hist + p_md
+```
+
+```{r volcano, fig.height=5, fig.width=6}
+vol <- data.frame(logFC = tt_eb$logFC, logP = -log10(tt_eb$P.Value), gene = rownames(tt_eb), sig = ifelse(tt_eb$adj.P.Val < 0.05, "FDR < 5%", "not significant"))
+ggplot(vol, aes(logFC, logP, colour = sig)) +
+  geom_point(size = 0.7, alpha = 0.7) +
+  ggrepel::geom_text_repel(data = vol[1:10, ], aes(label = gene), size = 3, colour = "black", max.overlaps = 20) +
+  scale_colour_manual(values = c(pal_safe[1], "grey60"), name = NULL) +
+  labs(x = "log2 fold change (sighted - blind)", y = expression(-log[10] ~ p), title = "Volcano plot") +
+  theme(legend.position = "bottom")
+```
+
+Heatmap of the ten most significant genes:
+
+```{r top-heatmap, fig.height=5, fig.width=7}
+phylo_heatmap(norm_data[rownames(tt_eb)[1:10], ], main = "top 10 genes")
+```
+
+## Beyond two conditions: branch-specific shifts with `phyloMash`
+
+The two-condition design asks about one specific pattern (blind versus sighted).
+`phyloMash` asks a different question: for every gene and every branch of the
+species tree, is there a shift in expression shared by the species descending
+from that branch, beyond what the phylogenetic drift (OU, here) and the
+species-specific non-phylogenetic variance explain? It works on the species
+means, with `mash` and tree-derived covariance patterns; see `?phyloMash`.
+Two crayfish species have a single sample; their within-species variance is pooled
+from the others, which makes their calls more fragile.
+
+```{r phylomash}
+pm <- phyloMash(norm_data, crayfish$tree, col_species = species, model = "OUfixedRoot",
+                rho_prime_grid = 0.3, shift_ratios = c(4, 16, 64), n_grid = 12)
+calls <- callShifts(pm, level = 0.10)
+```
+
+The estimated prior on the covariance patterns (no-shift families versus shifts
+on each branch), and the number of genes called on each branch at a 10% Bayesian FDR:
+
+```{r pattern-weights, fig.height=4, fig.width=9}
+pw <- pm$pattern_weights
+pw_df <- data.frame(pattern = names(pw), weight = as.vector(pw))
+pw_df$family <- ifelse(pw_df$pattern == "null", "null", ifelse(grepl("^drift", pw_df$pattern), "drift (no shift)", ifelse(pw_df$pattern == "identity", "species-specific variance", "shift")))
+pw_df$branch <- ifelse(pw_df$family == "shift", sub("^shift_([^_]+).*", "\\1", pw_df$pattern), pw_df$family)
+agg <- aggregate(weight ~ branch + family, pw_df, sum)
+agg <- agg[order(agg$family, -agg$weight), ]; agg$branch <- factor(agg$branch, levels = agg$branch)
+ggplot(agg, aes(branch, weight, fill = family)) +
+  geom_col() +
+  scale_fill_manual(values = pal_safe[c(1, 2, 4, 3)], name = NULL) +
+  labs(x = NULL, y = "prior weight", title = "Estimated mixture weights of the covariance patterns") +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1), legend.position = "bottom")
+```
+
+```{r tree-shifts, fig.height=6, fig.width=7}
+n_calls <- colSums(calls)
+br <- pm$branches
+edge_calls <- rep(0, nrow(crayfish$tree$edge)); edge_calls[br$edge] <- n_calls[br$label]
+edge_col <- pal_batlow(101)[1 + round(100 * edge_calls / max(edge_calls))]
+plot(crayfish$tree, edge.color = edge_col, edge.width = 4, tip.color = pal_species[crayfish$tree$tip.label], font = 2, label.offset = 0.01)
+edgelabels(ifelse(edge_calls > 0, edge_calls, ""), frame = "none", adj = c(0.5, -0.4), cex = 0.7)
+legend("topleft", legend = c("0", round(max(edge_calls) / 2), max(edge_calls)), fill = pal_batlow(101)[c(1, 51, 101)], title = "genes called", bty = "n", inset = 0.02)
+title("Genes with a shift on each branch (BFDR 10%)")
+```
+
+Many of the strongest calls are genes with essentially no expression in one
+species (deviations of 5 to 10 log2 units below the other species), which may be
+real losses or orthology/assembly artefacts and would deserve a filter in a real
+analysis. Among the other called genes, the shift probabilities and the posterior
+mean deviation of each species from the across-species mean (the shift, net of drift):
+
+```{r shift-heatmaps, fig.height=6, fig.width=9}
+moderate <- rowSums(calls) > 0 & apply(abs(pm$pm_species), 1, max) < 5
+top_shift <- names(sort(pm$shift_prob[moderate], decreasing = TRUE))[1:30]
+bp <- pm$branch_prob[top_shift, ]
+bp_long <- data.frame(gene = rep(rownames(bp), ncol(bp)), branch = rep(colnames(bp), each = nrow(bp)), prob = as.vector(bp))
+bp_long$gene <- factor(bp_long$gene, levels = rev(top_shift))
+p1 <- ggplot(bp_long, aes(branch, gene, fill = prob)) + geom_tile() +
+  scale_fill_gradientn(colours = pal_batlow(100), limits = c(0, 1), name = "P(shift)") +
+  labs(x = NULL, y = NULL, title = "Posterior probability of a shift") +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1, size = 7), axis.text.y = element_text(size = 7))
+pmsp <- pm$pm_species[top_shift, ]
+pm_long <- data.frame(gene = rep(rownames(pmsp), ncol(pmsp)), species = rep(colnames(pmsp), each = nrow(pmsp)), dev = as.vector(pmsp))
+pm_long$gene <- factor(pm_long$gene, levels = rev(top_shift)); pm_long$species <- factor(pm_long$species, levels = crayfish$tree$tip.label)
+lim <- max(abs(pm_long$dev))
+p2 <- ggplot(pm_long, aes(species, gene, fill = dev)) + geom_tile() +
+  scale_fill_gradientn(colours = pal_vik(100), limits = c(-lim, lim), name = "log2 deviation") +
+  labs(x = NULL, y = NULL, title = "Posterior mean species deviations") +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1, size = 7, colour = pal_species[crayfish$tree$tip.label]), axis.text.y = element_blank())
+p1 + p2
+```
+
+The sight-associated genes of the first analysis are a special case of this: a
+parallel shift in several blind lineages. For the top gene of the `limma` analysis:
+
+```{r top-gene, fig.height=4, fig.width=7}
+g <- rownames(tt_eb)[1]
+d <- data.frame(expr = norm_data[g, ], species = factor(species, levels = crayfish$tree$tip.label), sight = ifelse(design[, 2] == 1, "sighted", "blind"))
+ggplot(d, aes(species, expr, colour = sight)) +
+  geom_point(size = 2.5) +
+  geom_point(data = data.frame(species = factor(colnames(pm$pm_species), levels = crayfish$tree$tip.label), expr = pm$pm_species[g, ] + mean(norm_data[g, ])), aes(species, expr), inherit.aes = FALSE, shape = 95, size = 8, colour = "black") +
+  scale_colour_manual(values = cols_sight, name = NULL) +
+  labs(x = NULL, y = "log2 TPM", title = g, subtitle = sprintf("P(shift on any branch) = %.2f; top branch: %s; dashes: posterior mean species values", pm$shift_prob[g], pm$top_branch[g])) +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1, colour = pal_species[levels(d$species)]), legend.position = "bottom")
+```
+
+[^1]: Stern, D. B. and Crandall, K. A. (2018), 'The Evolution of Gene Expression Underlying Vision Loss in Cave Animals', Molecular Biology and Evolution 35(8), 2005--2014.
+
+[^2]: Bastide, P., Soneson, C., Stern, D. B., Lespinet, O. and Gallopin, M. (2023), 'A Phylogenetic Framework to Simulate Synthetic Interspecies RNA-Seq Data', Molecular Biology and Evolution 40(1), msac269.
+
+[^3]: Cornuault, J. (2022), 'Bayesian Analyses of Comparative Data with the Ornstein–Uhlenbeck Model: Potential Pitfalls', Systematic Biology 71(6), 1524--1540.

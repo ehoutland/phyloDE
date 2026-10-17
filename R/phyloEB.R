@@ -76,6 +76,7 @@
 #' \item{lambda, rho_prime, rho, alpha}{the gene-wise posterior means.}
 #' \item{cell}{the index of the grid point nearest to the gene-wise posterior mean.}
 #' \item{map}{the index of the gene-wise maximum a posteriori grid point.}
+#' \item{mle}{the index of the gene-wise maximum likelihood grid point (no pooling across genes).}
 #' \item{logml}{the gene-wise log marginal likelihood under the fitted prior.}
 #' \item{loglik_max}{the gene-wise maximum of the profile log-likelihood over the grid.}
 #' }
@@ -129,6 +130,7 @@ phyloEB <- function(object, design = NULL, phy, col_species = NULL,
   rho_prime_mean <- as.vector(post %*% grid$rho_prime)
   cell <- snap_to_grid(lambda_mean, rho_prime_mean, grid)
   map <- apply(post, 1, which.max)
+  mle <- apply(LL, 1, which.max)
 
   res <- list(grid = grid,
               prior = prior,
@@ -139,6 +141,7 @@ phyloEB <- function(object, design = NULL, phy, col_species = NULL,
               alpha = grid$alpha[cell],
               cell = cell,
               map = map,
+              mle = mle,
               logml = logml,
               loglik_max = ll_max,
               model = model,

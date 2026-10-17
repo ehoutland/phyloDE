@@ -32,7 +32,14 @@ Suggests:
     pracma,
     covr,
     knitr,
-    rmarkdown
+    rmarkdown,
+    ggplot2,
+    patchwork,
+    ggrepel,
+    scico,
+    rcartocolor,
+    Polychrome,
+    MASS
 URL: https://pbastide.github.io/phyloDE/
 VignetteBuilder: knitr
 Config/roxygen2/version: 8.0.0
