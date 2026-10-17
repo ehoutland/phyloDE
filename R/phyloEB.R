@@ -234,7 +234,7 @@ phyloEBGrid <- function(phy, model, measurement_error, n_lambda = 41, n_rho = 15
                         lambda_grid = NULL, rho_grid = NULL) {
   if (is.null(lambda_grid)) {
     if (measurement_error || model == "lambda") {
-      lambda_max <- getMaxLambda(getMinError(phy))
+      lambda_max <- min(getMaxLambda(getMinError(phy)), 1 - 1e-4)
       lambda_grid <- c(0, stats::plogis(seq(-7, 7, length.out = n_lambda - 2)), lambda_max)
     } else {
       lambda_grid <- 1
@@ -415,9 +415,12 @@ phyloEBGridPass <- function(y_data, design, z, phy, model, grid, REML = TRUE) {
 #'
 safe_chol <- function(C) {
   R <- try(chol(C), silent = TRUE)
-  if (inherits(R, "try-error")) {
-    R <- chol(C + diag(1e-8 * max(diag(C)), nrow(C)))
+  ridge <- 1e-8
+  while (inherits(R, "try-error") && ridge <= 1e-2) {
+    R <- try(chol(C + diag(ridge * max(diag(C)), nrow(C))), silent = TRUE)
+    ridge <- ridge * 100
   }
+  if (inherits(R, "try-error")) stop("The correlation matrix of the tree could not be factorised.")
   R
 }
 
