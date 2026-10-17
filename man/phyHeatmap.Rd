@@ -24,8 +24,8 @@ with rows corresponding to samples and columns to coefficients to be estimated.
 Defaults to the unit vector (intercept).}
 
 \item{coef}{column number or column name specifying which coefficient or contrast
-of the linear model in the \code{design} matrix is of interest. If left \code{NULL},
-defaults to the last column of \code{design}.}
+of the linear model in the `design` matrix is of interest. If left \code{NULL},
+defaults to the last column of `design`.}
 
 \item{phy}{an object of class \code{\link[ape]{phylo}}, representing the phylogenetic
 relationships between the species. It must be dated and ultrametric.
@@ -40,15 +40,15 @@ so that the tree directly includes all the replicates.}
 The default is "none", as the data is assumed to be already normalized.
 This scaling only affects the colour scale; it does not scale the original data. See documentation of \code{\link{heatmap}}.}
 
-\item{ColSideColors}{(optional) character vector of length \code{ncol(object)}
+\item{ColSideColors}{(optional) character vector of length `ncol(object)`
 containing the color names for a horizontal side bar that may be used to annotate the columns of the heatmap.
-If left \code{NULL} and \code{design} is specified, the column of the \code{design} matrix corresponding to \code{coef} will be used.}
+If left \code{NULL} and `design` is specified, the column of the \code{design} matrix corresponding to `coef` will be used.}
 
 \item{add.expr}{expression that will be evaluated after the call to image.
 Can be used to add components to the plot.
 See documentation of \code{\link{heatmap}}.
-If left \code{NULL} and \code{design} is specified, the column of the \code{design}
-matrix corresponding to \code{coef} will be used to draw vertical lines.}
+If left \code{NULL} and `design` is specified, the column of the \code{design}
+matrix corresponding to `coef` will be used to draw vertical lines.}
 
 \item{...}{further arguments to be passed to \code{\link{heatmap}}.
 Argument \code{Colv} defaults to the phylogeny, and cannot be overwritten.}

@@ -19,6 +19,8 @@ Imports:
     phytools,
     phylolm (>= 2.6.5),
     mixsqp,
+    mashr,
+    ashr,
     methods,
     foreach,
     doParallel
