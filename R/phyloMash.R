@@ -55,6 +55,13 @@
 #' @param fit_subset if not \code{NULL}, the number of (randomly chosen) genes used to
 #' estimate the mixture weights, which are then applied to all genes
 #' (faster for large data sets).
+#' @param patterns \code{"tree"} (the default): the drift and shift patterns described
+#' above; \code{"canonical"}: the data-agnostic patterns of \code{\link[mashr]{cov_canonical}}
+#' only (null, singletons, equal effects, simple heterogeneity, identity), as in
+#' \code{dreamlet::run_mash}, with the null correlation estimated by
+#' \code{\link[mashr]{mash_estimate_corr_em}}; a singleton pattern on species s counts
+#' as a shift on the terminal branch of s, and internal branches get no shift
+#' probability. Useful as a reference for what the tree-derived patterns add.
 #' @param ... further arguments passed to \code{\link[mashr]{mash}}.
 #'
 #' @return An object of class \code{PhyloMash}, a list with
@@ -76,9 +83,10 @@
 phyloMash <- function(object, phy, col_species = NULL, model = c("BM", "OUfixedRoot"),
                       rho_prime_grid = c(0.1, 0.5), shift_ratios = c(1, 4, 16, 64), min_shift_ratio = 4,
                       noise_ratios = c(0.25, 1, 4), identity = TRUE, trend = TRUE, n_grid = 15,
-                      fit_subset = NULL, covariates = NULL, ...) {
+                      fit_subset = NULL, covariates = NULL, patterns = c("tree", "canonical"), ...) {
   if (!requireNamespace("mashr", quietly = TRUE)) stop("Package 'mashr' is needed for function 'phyloMash'.")
   model <- match.arg(model)
+  patterns <- match.arg(patterns)
   if (!ape::is.ultrametric(phy)) stop("The tree must be ultrametric.")
   if (inherits(object, "SpeciesStats")) {
     stats <- object
@@ -112,41 +120,59 @@ phyloMash <- function(object, phy, col_species = NULL, model = c("BM", "OUfixedR
   branches <- bi$branches[keep, ]
   labels <- branches$label
   tr_u <- rescale_tree(phy)
-  drifts <- list(BM = ape::vcv(tr_u))
-  if (model == "OUfixedRoot") {
-    ab <- getBoundsSelectionStrength(tr_u)
-    for (rp in rho_prime_grid) {
-      al <- rho_prime_inv(rp, 1, ab)
-      drifts[[paste0("OU", rp)]] <- ape::vcv(rescale_tree(phylolm::transf.branch.lengths(tr_u, "OUfixedRoot", parameters = list(alpha = al))$tree))
-    }
-  }
   toc <- function(U) { Uc <- L %*% U %*% t(L); Uc <- (Uc + t(Uc)) / 2; Uc / max(diag(Uc)) }
   Ulist <- list(); tag <- character()
-  for (dn in names(drifts)) {
-    Ulist[[paste0("drift_", dn)]] <- toc(drifts[[dn]]); tag[paste0("drift_", dn)] <- "none"
-    for (q in noise_ratios) {
-      nm <- paste0("drift_", dn, "_noise", q)
-      Ulist[[nm]] <- toc(drifts[[dn]] + q * diag(S)); tag[nm] <- "none"
+  if (patterns == "tree") {
+    drifts <- list(BM = ape::vcv(tr_u))
+    if (model == "OUfixedRoot") {
+      ab <- getBoundsSelectionStrength(tr_u)
+      for (rp in rho_prime_grid) {
+        al <- rho_prime_inv(rp, 1, ab)
+        drifts[[paste0("OU", rp)]] <- ape::vcv(rescale_tree(phylolm::transf.branch.lengths(tr_u, "OUfixedRoot", parameters = list(alpha = al))$tree))
+      }
     }
-  }
-  if (identity) { Ulist[["identity"]] <- toc(diag(S)); tag["identity"] <- "none" }
-  for (b in seq_along(labels)) {
-    Ub <- tcrossprod(Zs[, b])
-    Ulist[[paste0("shift_", labels[b])]] <- toc(Ub); tag[paste0("shift_", labels[b])] <- labels[b]
-    for (rr in shift_ratios) {
-      nm <- paste0("shift_", labels[b], "_r", rr)
-      Ulist[[nm]] <- toc(drifts[["BM"]] + rr * Ub)
-      tag[nm] <- if (rr >= min_shift_ratio) labels[b] else "none"
+    for (dn in names(drifts)) {
+      Ulist[[paste0("drift_", dn)]] <- toc(drifts[[dn]]); tag[paste0("drift_", dn)] <- "none"
+      for (q in noise_ratios) {
+        nm <- paste0("drift_", dn, "_noise", q)
+        Ulist[[nm]] <- toc(drifts[[dn]] + q * diag(S)); tag[nm] <- "none"
+      }
     }
+    if (identity) { Ulist[["identity"]] <- toc(diag(S)); tag["identity"] <- "none" }
+    for (b in seq_along(labels)) {
+      Ub <- tcrossprod(Zs[, b])
+      Ulist[[paste0("shift_", labels[b])]] <- toc(Ub); tag[paste0("shift_", labels[b])] <- labels[b]
+      for (rr in shift_ratios) {
+        nm <- paste0("shift_", labels[b], "_r", rr)
+        Ulist[[nm]] <- toc(drifts[["BM"]] + rr * Ub)
+        tag[nm] <- if (rr >= min_shift_ratio) labels[b] else "none"
+      }
+    }
+  } else {
+    ## dreamlet-style: canonical patterns in the contrast space; singleton on contrast "s - mean" ~ shift on species s
+    Ulist <- mashr::cov_canonical(data)
+    tag <- setNames(rep("none", length(Ulist)), names(Ulist))
+    for (s_i in seq_len(S - 1)) {
+      nm <- paste0("singletons_", s_i)
+      if (nm %in% names(Ulist)) tag[nm] <- species[s_i]
+    }
+    ## the S-th species is -sum of the contrasts: no singleton; use the equal-effects-with-opposite-sign pattern as its shift
+    Ulist[[paste0("singleton_", species[S])]] <- toc(tcrossprod(as.numeric(seq_len(S) == S)))
+    tag[paste0("singleton_", species[S])] <- species[S]
   }
 
   ## mash fit
   g_auto <- mashr:::autoselect_grid(data, sqrt(2))
   grid <- exp(seq(log(min(g_auto)), log(max(g_auto)), length.out = n_grid))
+  if (patterns == "canonical") {
+    ## estimate the null correlation from the data (dreamlet::run_mash)
+    Vem <- mashr::mash_estimate_corr_em(data, Ulist, details = TRUE)
+    data <- mashr::mash_update_data(data, V = Vem$V)
+  }
   if (!is.null(fit_subset) && fit_subset < G) {
     sub <- sort(sample.int(G, fit_subset))
     df_sub <- if (is.matrix(df)) df[sub, , drop = FALSE] else df
-    data_sub <- mashr::mash_set_data(Bhat[sub, , drop = FALSE], Shat[sub, , drop = FALSE], df = df_sub, V = V)
+    data_sub <- mashr::mash_set_data(Bhat[sub, , drop = FALSE], Shat[sub, , drop = FALSE], df = df_sub, V = data$V)
     m_sub <- mashr::mash(data_sub, Ulist, grid = grid, outputlevel = 1, verbose = FALSE, ...)
     m <- mashr::mash(data, g = ashr::get_fitted_g(m_sub), fixg = TRUE, outputlevel = 2, verbose = FALSE)
   } else {
@@ -169,7 +195,7 @@ phyloMash <- function(object, phy, col_species = NULL, model = c("BM", "OUfixedR
               top_branch = labels[max.col(branch_prob, ties.method = "first")],
               pm_species = pm_species, species_means = M, se_species = SE, dropout = stats$dropout[, ord, drop = FALSE],
               pattern_weights = pattern_weights, branches = branches, L = L, df = df,
-              model = model, phy = phy, stats_method = stats$method, genes = stats$genes)
+              model = model, patterns = patterns, phy = phy, stats_method = stats$method, genes = stats$genes)
   class(res) <- "PhyloMash"
   return(res)
 }

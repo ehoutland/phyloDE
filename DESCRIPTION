@@ -27,6 +27,7 @@ Imports:
 Suggests: 
     Rphylopars,
     edgeR,
+    variancePartition,
     statmod,
     testthat,
     pracma,

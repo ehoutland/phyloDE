@@ -18,6 +18,7 @@ phyloMash(
   n_grid = 15,
   fit_subset = NULL,
   covariates = NULL,
+  patterns = c("tree", "canonical"),
   ...
 )
 }
@@ -60,6 +61,14 @@ estimate the mixture weights, which are then applied to all genes
 
 \item{covariates}{optional sample-level covariates, see \code{\link{speciesStats}}
 (ignored if \code{object} is a \code{SpeciesStats} object).}
+
+\item{patterns}{\code{"tree"} (the default): the drift and shift patterns described
+above; \code{"canonical"}: the data-agnostic patterns of \code{\link[mashr]{cov_canonical}}
+only (null, singletons, equal effects, simple heterogeneity, identity), as in
+\code{dreamlet::run_mash}, with the null correlation estimated by
+\code{\link[mashr]{mash_estimate_corr_em}}; a singleton pattern on species s counts
+as a shift on the terminal branch of s, and internal branches get no shift
+probability. Useful as a reference for what the tree-derived patterns add.}
 
 \item{...}{further arguments passed to \code{\link[mashr]{mash}}.}
 }
