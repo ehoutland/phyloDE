@@ -2,7 +2,7 @@
 % Please edit documentation in R/phyloShift.R
 \name{phyloShiftMash}
 \alias{phyloShiftMash}
-\title{Empirical Bayes shift detection across branches with mash}
+\title{Empirical Bayes shift detection across branches with mash (branch estimates)}
 \usage{
 phyloShiftMash(
   fit,
@@ -76,6 +76,14 @@ drift as an effect), \code{pm} (posterior means) and \code{psd} (posterior stand
 and \code{V} (the null correlation used).
 }
 \description{
+\strong{Experimental; prefer \code{\link{phyloMash}}.} In simulations with
+few species, the branch-wise estimates of a gene without any shift are not
+jointly Gaussian once the phylogenetic parameters are estimated under each
+branch's alternative, and \code{mash} then assigns most genes to shift
+patterns. \code{\link{phyloMash}}, which works on the species means and
+integrates the phylogenetic variance over the mash scale grid, does not have
+this problem.
+
 Run \code{\link[mashr]{mash}} on the branch-wise shift estimates of
 \code{\link{phyloShiftFit}}: the effects are the shifts on all testable
 branches, and the prior is a mixture of (scaled) covariance patterns
