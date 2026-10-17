@@ -246,7 +246,8 @@ phyloEBGrid <- function(phy, model, measurement_error, n_lambda = 41, n_rho = 15
     alpha_bounds <- getBoundsSelectionStrength(phy)
     if (is.null(rho_grid)) {
       rho_prime_bounds <- rho_prime(rev(alpha_bounds), h_tree)
-      rho_grid <- stats::plogis(seq(stats::qlogis(rho_prime_bounds[1]) + 0.05, stats::qlogis(rho_prime_bounds[2]) - 0.05, length.out = n_rho))
+      rho_prime_bounds <- c(max(rho_prime_bounds[1], 1e-3), min(rho_prime_bounds[2], 1 - 1e-3))
+      rho_grid <- stats::plogis(seq(stats::qlogis(rho_prime_bounds[1]), stats::qlogis(rho_prime_bounds[2]), length.out = n_rho))
     }
     if (any(rho_grid <= 0 | rho_grid > 1)) stop("`rho_grid` must be in (0, 1].")
     alpha_grid <- sapply(rho_grid, function(rr) rho_prime_inv(rr, h_tree, alpha_bounds))
@@ -304,7 +305,7 @@ eb_transform_tree <- function(phy, model, lambda, alpha = 0) {
 #'
 eb_grid_chol <- function(phy, model, grid, cells = seq_len(nrow(grid))) {
   trees <- lapply(cells, function(k) eb_transform_tree(phy, model, grid$lambda[k], grid$alpha[k]))
-  C_chol <- lapply(trees, function(tt) chol(ape::vcv(tt)))
+  C_chol <- lapply(trees, function(tt) safe_chol(ape::vcv(tt)))
   logdet <- sapply(C_chol, function(R) 2 * sum(log(diag(R))))
   return(list(C_chol = C_chol, logdet = logdet, trees = trees))
 }
@@ -332,7 +333,7 @@ phyloEBLogLik <- function(y_data, design, phy, model, grid, REML = TRUE) {
   LL <- matrix(NA_real_, nrow = nrow(y_data), ncol = nrow(grid))
   for (k in seq_len(nrow(grid))) {
     tree_k <- eb_transform_tree(phy, model, grid$lambda[k], grid$alpha[k])
-    R <- chol(ape::vcv(tree_k))
+    R <- safe_chol(ape::vcv(tree_k))
     logdetC <- 2 * sum(log(diag(R)))
     Yt <- backsolve(R, tY, transpose = TRUE)
     Xt <- backsolve(R, design, transpose = TRUE)
@@ -377,7 +378,7 @@ phyloEBGridPass <- function(y_data, design, z, phy, model, grid, REML = TRUE) {
   nz <- rep(NA_real_, K)
   for (k in seq_len(K)) {
     tree_k <- eb_transform_tree(phy, model, grid$lambda[k], grid$alpha[k])
-    R <- chol(ape::vcv(tree_k))
+    R <- safe_chol(ape::vcv(tree_k))
     logdetC <- 2 * sum(log(diag(R)))
     X0t <- backsolve(R, design, transpose = TRUE)
     zt <- backsolve(R, z, transpose = TRUE)
@@ -397,6 +398,27 @@ phyloEBGridPass <- function(y_data, design, z, phy, model, grid, REML = TRUE) {
   }
   rownames(LL) <- rownames(est) <- rownames(s2) <- rownames(y_data)
   list(loglik = LL, est = est, s2 = s2, nz = nz)
+}
+
+#' @title Cholesky factor with a fallback
+#'
+#' @description
+#' Upper Cholesky factor of a correlation matrix; if the factorisation fails
+#' numerically (nearly identical replicates after an extreme tree transformation),
+#' a small ridge is added to the diagonal.
+#'
+#' @param C a symmetric positive (semi-)definite matrix.
+#'
+#' @return The upper Cholesky factor.
+#'
+#' @keywords internal
+#'
+safe_chol <- function(C) {
+  R <- try(chol(C), silent = TRUE)
+  if (inherits(R, "try-error")) {
+    R <- chol(C + diag(1e-8 * max(diag(C)), nrow(C)))
+  }
+  R
 }
 
 #' @title Nearest grid point
