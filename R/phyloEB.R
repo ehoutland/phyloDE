@@ -171,17 +171,25 @@ phyloEB <- function(object, design = NULL, phy, col_species = NULL,
 #'
 #' @param grid a grid as returned by \code{\link{phyloEBGrid}}.
 #' @param bandwidths vector of bandwidths (logit scale), or \code{NULL}.
+#' @param max_centers maximum number of bump centers per dimension of the grid.
 #'
 #' @return A grid points by components matrix, with columns summing to one.
 #'
 #' @keywords internal
 #'
-eb_prior_components <- function(grid, bandwidths = NULL) {
+eb_prior_components <- function(grid, bandwidths = NULL, max_centers = 15) {
   K <- nrow(grid)
   if (is.null(bandwidths) || all(bandwidths <= 0)) return(diag(K))
   logit_clamp <- function(x) stats::qlogis(pmin(pmax(x, 1e-6), 1 - 1e-6))
-  d2 <- outer(logit_clamp(grid$lambda), logit_clamp(grid$lambda), "-")^2
-  if (length(unique(grid$rho_prime)) > 1) d2 <- d2 + outer(logit_clamp(grid$rho_prime), logit_clamp(grid$rho_prime), "-")^2
+  ## bump centers: a sub-grid with at most `max_centers` values per dimension
+  ## (neighbouring bumps are nearly collinear, which makes the mixture fit very slow)
+  sub_values <- function(x) {
+    u <- sort(unique(x))
+    u[unique(round(seq(1, length(u), length.out = min(length(u), max_centers))))]
+  }
+  centers <- grid$lambda %in% sub_values(grid$lambda) & grid$rho_prime %in% sub_values(grid$rho_prime)
+  d2 <- outer(logit_clamp(grid$lambda), logit_clamp(grid$lambda[centers]), "-")^2
+  if (length(unique(grid$rho_prime)) > 1) d2 <- d2 + outer(logit_clamp(grid$rho_prime), logit_clamp(grid$rho_prime[centers]), "-")^2
   B <- do.call(cbind, lapply(bandwidths, function(s) {
     b <- exp(-0.5 * d2 / s^2)
     sweep(b, 2, colSums(b), "/")

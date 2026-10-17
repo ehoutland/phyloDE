@@ -17,6 +17,7 @@ phyloEB(
   lambda_grid = NULL,
   rho_grid = NULL,
   keep_posterior = TRUE,
+  prior_smoothing = c(0.5, 1, 2),
   prior_pseudocount = 1e-08
 )
 }
@@ -66,6 +67,11 @@ See \code{\link[phylolm]{phylolm}} for more details.}
 \item{keep_posterior}{if \code{TRUE} (the default), the genes by grid matrix
 of posterior probabilities is kept in the result. Set to \code{FALSE} to
 save memory on large data sets.}
+
+\item{prior_smoothing}{bandwidths (standard deviations, on the logit scale)
+of the Gaussian bumps used as prior components (see Details).
+Default to \code{c(0.5, 1, 2)}. Set to \code{NULL} for a non-smoothed prior
+(free weights on the grid points, the NPMLE).}
 
 \item{prior_pseudocount}{a small mass added uniformly to the estimated prior
 so that no grid point has exactly zero prior probability. Default to 1e-8.}
@@ -118,11 +124,18 @@ see \code{\link{rhoFromAlpha}}), and \eqn{\lambda} is then applied to the
 OU-transformed tree, as in \code{\link{phylolmFit}}.
 }
 
-The prior is a free probability vector on the grid, estimated by maximum
+The prior is a mixture distribution on the grid, estimated by maximum
 marginal likelihood, exactly as in the \code{ashr} package but using the
 exact profile likelihood of the phylogenetic model rather than a normal
 approximation of a point estimate (which is not available for these
-bounded parameters). The per-gene posterior mean of \eqn{(\lambda, \rho')}
+bounded parameters). As in \code{ashr}, the mixture components overlap so
+that the estimated prior is smooth: each component is a Gaussian bump on
+the logit scale of the parameters, centered on a grid point, with a bandwidth
+taken in \code{prior_smoothing}; the bumps are discretised on the grid.
+Without smoothing (\code{prior_smoothing = NULL}), the prior is the
+non-parametric maximum likelihood estimate, which is typically supported on a
+handful of grid points and gives over-confident gene-wise posteriors.
+The per-gene posterior mean of \eqn{(\lambda, \rho')}
 is "snapped" to the nearest grid point, so that genes sharing a grid point
 share the same correlation structure, which makes the downstream fit
 (see \code{\link{phylolmFit}}, argument \code{eb_model}) fast.
