@@ -13,6 +13,7 @@ phylolmFit(
   measurement_error = TRUE,
   use_consensus = TRUE,
   consensus_tree = NULL,
+  eb_model = NULL,
   REML = TRUE,
   ncores = 1,
   ...
@@ -61,6 +62,11 @@ its own correlation structure accordingly.}
 result of function \code{\link{phylogeneticCorrelations}}.
 If provided, arguments \code{phy}, \code{model} and \code{measurement_error} will be ignored.}
 
+\item{eb_model}{If not \code{NULL}, an object of class \code{\link{PhyloEBModel-class}},
+result of function \code{\link{phyloEB}}, holding empirical Bayes regularized
+gene-wise phylogenetic parameters. Each gene then uses its own (regularized)
+correlation structure. Cannot be used together with \code{use_consensus = TRUE}.}
+
 \item{REML}{Use REML (default) or ML for estimating the parameters.}
 
 \item{ncores}{number of cores to use for parallel computation. Default to 1 (no parallel computation).}
@@ -83,15 +89,13 @@ This function inherits its interface from the \code{limma} function \code{\link[
 }
 \details{
 This function performs the fit in several steps:
-\enumerate{
-\item Fit a phylogenetic linear model with \code{\link[phylolm]{phylolm}} on each gene.
-\item If \code{use_consensus = TRUE}, use the trimmed mean of transformed parameters to get one regularized value for all the genes.
+1. Fit a phylogenetic linear model with \code{\link[phylolm]{phylolm}} on each gene.
+2. If `use_consensus = TRUE`, use the trimmed mean of transformed parameters to get one regularized value for all the genes.
 This step uses \code{\link{phylogeneticCorrelations}}, and is similar to \code{\link[limma]{duplicateCorrelation}}.
 For more details on the specific parameters used in the regularization, see function \code{getParameters}.
-\item Compute the estimated phylogenetic correlation matrix \eqn{\hat{C}_g} for each gene (it is the same for all genes if \code{use_consensus = TRUE}).
-\item De-correlate the normalized data by left-multiplying it by \eqn{\hat{C}^{-1/2}_g} the inverse Cholesky decomposition of the correlation matrix.
-\item Use \code{\link[limma]{lmFit}} on the de-correlated data.
-}
+3. Compute the estimated phylogenetic correlation matrix \eqn{\hat{C}_g} for each gene (it is the same for all genes if `use_consensus = TRUE`).
+4. De-correlate the normalized data by left-multiplying it by \eqn{\hat{C}^{-1/2}_g} the inverse Cholesky decomposition of the correlation matrix.
+5. Use \code{\link[limma]{lmFit}} on the de-correlated data.
 
 In particular, this procedure ensures that the fitted
 \code{coefficients}, \code{stdev.unscaled},

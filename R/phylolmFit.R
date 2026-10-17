@@ -39,6 +39,10 @@
 #' @param consensus_tree If not \code{NULL}, the consensus tree containing the correlation structure,
 #' result of function \code{\link{phylogeneticCorrelations}}.
 #' If provided, arguments \code{phy}, \code{model} and \code{measurement_error} will be ignored.
+#' @param eb_model If not \code{NULL}, an object of class \code{\link{PhyloEBModel-class}},
+#' result of function \code{\link{phyloEB}}, holding empirical Bayes regularized
+#' gene-wise phylogenetic parameters. Each gene then uses its own (regularized)
+#' correlation structure. Cannot be used together with \code{use_consensus = TRUE}.
 #' @param REML Use REML (default) or ML for estimating the parameters.
 #' @param ncores number of cores to use for parallel computation. Default to 1 (no parallel computation).
 #' @param ... further parameters to be passed
@@ -123,6 +127,7 @@ phylolmFit <- function(object, design = NULL, phy, col_species = NULL,
                        measurement_error = TRUE,
                        use_consensus = TRUE,
                        consensus_tree = NULL,
+                       eb_model = NULL,
                        REML = TRUE,
                        ncores = 1, ...) {
 
@@ -148,6 +153,36 @@ phylolmFit <- function(object, design = NULL, phy, col_species = NULL,
 
   ## phylo model
   model <- match.arg(model)
+
+  ##################################################################################################
+  ## Empirical Bayes gene-wise parameters
+
+  if (!is.null(eb_model)) {
+    if (!is.null(consensus_tree)) stop("Please provide either `consensus_tree` or `eb_model`, not both.")
+    if (!missing(use_consensus) && use_consensus) stop("`eb_model` provides gene-wise parameters: please set `use_consensus = FALSE`.")
+    check.eb_model(eb_model, model, measurement_error, y_data)
+    resEB <- lmFitEB(y_data, design, eb_model, ...)
+    resFitFormat <- new("PhyloMArrayLM",
+                        resEB[c("coefficients", "sigma", "stdev.unscaled", "df.residual",
+                                "Amean", "qr", "cov.coefficients", "pivot")])
+    ## no `design` (nor `design_trans`, which `$` would partially match) slot on purpose:
+    ## limma::eBayes would try to compute an F statistic from the gene-wise (list)
+    ## cov.coefficients. Same as the gene-wise fit below.
+    resFitFormat$phy <- phy
+    resFitFormat$modelphy <- model
+    resFitFormat$measurement_error <- measurement_error
+    resFitFormat$phy_trans <- resEB$trans_tree
+    resFitFormat$C_tree <- resEB$C_tree
+    lambda_cells <- eb_model$grid$lambda[eb_model$cell]
+    resFitFormat$optpar <- if (model == "OUfixedRoot") eb_model$grid$alpha[eb_model$cell] else rep(NA, nrow(y_data))
+    resFitFormat$lambda_error <- lambda_cells
+    resFitFormat$sigma2_phy <- if (model == "BM") lambda_cells * resEB$sigma^2 / tree_height(phy) else rep(NA, nrow(y_data))
+    resFitFormat$sigma2_error <- (1 - lambda_cells) * resEB$sigma^2
+    resFitFormat$REML <- REML
+    resFitFormat$use_consensus <- FALSE
+    resFitFormat$eb_model <- eb_model
+    return(resFitFormat)
+  }
 
   ##################################################################################################
   ## Consensus tree

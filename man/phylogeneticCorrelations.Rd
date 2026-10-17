@@ -49,9 +49,9 @@ except for the "lambda" model.
 See \code{\link[phylolm]{phylolm}} for more details.}
 
 \item{trim}{a vector of size two, with the fraction of observations to be trimmed from the lower and upper ends of
-\code{atanh(all.lambdas)} and \code{atanh(rho)} when computing the trimmed mean.
+`atanh(all.lambdas)` and `atanh(rho)` when computing the trimmed mean.
 If a single value is provided, it is recycled as a vector of size two.
-Default to \code{c(0.25, 0.05)}. See also the \code{trim} argument in \code{\link[limma]{duplicateCorrelation}}.}
+Default to `c(0.25, 0.05)`. See also the `trim` argument in \code{\link[limma]{duplicateCorrelation}}.}
 
 \item{REML}{Use REML (default) or ML for estimating the parameters.}
 
@@ -74,29 +74,26 @@ evolution.
 }
 \details{
 This function finds a consensus tree in two steps:
-\enumerate{
-\item Fit a phylogenetic linear model with \code{\link[phylolm]{phylolm}} on each gene.
-\item Use the trimmed mean of transformed parameters to get one regularized value for all the genes.
-}
+1. Fit a phylogenetic linear model with \code{\link[phylolm]{phylolm}} on each gene.
+2. Use the trimmed mean of transformed parameters to get one regularized value for all the genes.
 
-Given a vector of parameters \code{params_genes} on all genes,
-the consensus parameter \code{param_consensus} is found using the formula:
+Given a vector of parameters `params_genes` on all genes,
+the consensus parameter `param_consensus` is found using the formula:
+```
+param_consensus = mean_trim(tanh(params_genes), trim = trim)
+```
 
-\if{html}{\out{<div class="sourceCode">}}\preformatted{param_consensus = mean_trim(tanh(params_genes), trim = trim)
-}\if{html}{\out{</div>}}
+The regularized parameters `params` depend on the phylogenetic model used:
+* For a BM with measurement error or a Pagel's lambda model, the
+regularized parameter is `lambda`.
+* For a OU process with measurement error the
+regularized parameters are `lambda` and `rho`.
 
-The regularized parameters \code{params} depend on the phylogenetic model used:
-\itemize{
-\item For a BM with measurement error or a Pagel's lambda model, the
-regularized parameter is \code{lambda}.
-\item For a OU process with measurement error the
-regularized parameters are \code{lambda} and \code{rho}.
-}
 
 The consensus tree can then be given to \code{\link{phylolmFit}} with the
-argument \code{consensus_tree}.
+argument `consensus_tree`.
 This two step procedure is equivalent to calling \code{\link{phylolmFit}}
-with \code{use_consensus = TRUE} and no consensus tree directly (see Examples).
+with `use_consensus = TRUE` and no consensus tree directly (see Examples).
 
 The default bounds on the phylogenetic parameters are the same as in
 \code{\link[phylolm]{phylolm}}, except for the \code{alpha} parameter of the OU,

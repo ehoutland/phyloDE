@@ -4,14 +4,14 @@
 \name{phyloDE-package}
 \alias{phyloDE-package}
 \alias{phyloDE}
-\title{The \code{phyloDE} Package for Differential Expression Analysis}
+\title{The `phyloDE` Package for Differential Expression Analysis}
 \description{
-The \code{phyloDE} package fits linear model on inter-species gene expression data,
+The `phyloDE` package fits linear model on inter-species gene expression data,
 combining Phylogenetic Comparative Methods implemented in \code{\link[phylolm]{phylolm}}
 with moderated statistics tailored for gene expression implemented in \code{\link[limma]{limma}}.
 
 With a design matrix that expresses a grouping conditions at the tip of a phylogeny,
-\code{phyloDE} can perform Differential Expression analysis.
+`phyloDE` can perform Differential Expression analysis.
 
 The main function of the package are \code{\link{phylolmFit}} and \code{\link{phylogeneticCorrelations}},
 that inherit from the interfaces of both \code{\link[phylolm]{phylolm}}
