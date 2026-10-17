@@ -145,7 +145,8 @@ phyloMash <- function(object, phy, col_species = NULL, model = c("BM", "OUfixedR
   grid <- exp(seq(log(min(g_auto)), log(max(g_auto)), length.out = n_grid))
   if (!is.null(fit_subset) && fit_subset < G) {
     sub <- sort(sample.int(G, fit_subset))
-    data_sub <- mashr::mash_set_data(Bhat[sub, , drop = FALSE], Shat[sub, , drop = FALSE], df = df, V = V)
+    df_sub <- if (is.matrix(df)) df[sub, , drop = FALSE] else df
+    data_sub <- mashr::mash_set_data(Bhat[sub, , drop = FALSE], Shat[sub, , drop = FALSE], df = df_sub, V = V)
     m_sub <- mashr::mash(data_sub, Ulist, grid = grid, outputlevel = 1, verbose = FALSE, ...)
     m <- mashr::mash(data, g = ashr::get_fitted_g(m_sub), fixg = TRUE, outputlevel = 2, verbose = FALSE)
   } else {
