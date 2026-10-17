@@ -247,7 +247,7 @@ phyloEBGrid <- function(phy, model, measurement_error, n_lambda = 41, n_rho = 15
     if (is.null(rho_grid)) {
       rho_prime_bounds <- rho_prime(rev(alpha_bounds), h_tree)
       rho_prime_bounds <- c(max(rho_prime_bounds[1], 1e-3), min(rho_prime_bounds[2], 1 - 1e-3))
-      rho_grid <- stats::plogis(seq(stats::qlogis(rho_prime_bounds[1]), stats::qlogis(rho_prime_bounds[2]), length.out = n_rho))
+      rho_grid <- stats::plogis(seq(stats::qlogis(rho_prime_bounds[1]) + 0.05, stats::qlogis(rho_prime_bounds[2]) - 0.05, length.out = n_rho))
     }
     if (any(rho_grid <= 0 | rho_grid > 1)) stop("`rho_grid` must be in (0, 1].")
     alpha_grid <- sapply(rho_grid, function(rr) rho_prime_inv(rr, h_tree, alpha_bounds))
