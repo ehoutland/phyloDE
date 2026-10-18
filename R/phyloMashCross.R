@@ -155,6 +155,7 @@ cross_sampling_correlation <- function(fit, focal) {
   tr_u <- rescale_tree(fit$phy_rep)
   alpha <- if (fit$model == "OUfixedRoot") rho_prime_inv(1 - stats::median(fit$rho[, focal]), 1, getBoundsSelectionStrength(tr_u)) else 0
   C <- ape::vcv(eb_transform_tree(tr_u, fit$model, 1, alpha))
+  if (!is.null(fit$eta)) { eta <- stats::median(fit$eta[, focal]); C <- (1 - eta) * C + eta * outer(fit$col_species, fit$col_species, "==") }
   Dn <- colMeans((1 / fit$weights) / rowMeans(1 / fit$weights))
   Sig <- lam * C + (1 - lam) * diag(Dn, n)
   R <- chol(Sig)

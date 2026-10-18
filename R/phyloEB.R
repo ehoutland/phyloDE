@@ -169,11 +169,19 @@ phyloEB <- function(object, design = NULL, phy, col_species = NULL,
 #'
 #' @keywords internal
 #'
-eb_fit_prior <- function(LL, grid, prior_smoothing = c(0.5, 1, 2), prior_pseudocount = 1e-8) {
+eb_fit_prior <- function(LL, grid, prior_smoothing = c(0.5, 1, 2), prior_pseudocount = 1e-8, null_weight = 0) {
   ll_max <- apply(LL, 1, max)
   lik <- exp(LL - ll_max)
   B <- eb_prior_components(grid, prior_smoothing)
-  fit <- mixsqp::mixsqp(lik %*% B, control = list(verbose = FALSE))
+  LB <- lik %*% B
+  if (null_weight > 0 && !is.null(grid$eta)) {
+    ## null-biased prior on the species-level component (as the "nullbiased" prior of ashr): pseudo-observations
+    ## that are only explained by components centred on eta == 0, with total weight null_weight * nrow(LL)
+    centers_eta <- apply(B, 2, function(b) grid$eta[which.max(b)])
+    pseudo <- matrix(as.numeric(centers_eta == 0), nrow = 1)
+    LB <- rbind(LB, pseudo[rep(1, max(1, round(null_weight * nrow(LL)))), , drop = FALSE])
+  }
+  fit <- mixsqp::mixsqp(LB, control = list(verbose = FALSE))
   weights <- pmax(fit$x, 0)
   weights <- weights / sum(weights)
   prior <- as.vector(B %*% weights)
@@ -211,8 +219,11 @@ eb_prior_components <- function(grid, bandwidths = NULL, max_centers = 15) {
     u[unique(round(seq(1, length(u), length.out = min(length(u), max_centers))))]
   }
   centers <- grid$lambda %in% sub_values(grid$lambda) & grid$rho_prime %in% sub_values(grid$rho_prime)
+  if (!is.null(grid$eta)) centers <- centers & grid$eta %in% sub_values(grid$eta)
   d2 <- outer(logit_clamp(grid$lambda), logit_clamp(grid$lambda[centers]), "-")^2
   if (length(unique(grid$rho_prime)) > 1) d2 <- d2 + outer(logit_clamp(grid$rho_prime), logit_clamp(grid$rho_prime[centers]), "-")^2
+  ## eta (species-level non-phylogenetic share) is kept sharp: bumps only connect grid points with the same eta
+  if (!is.null(grid$eta) && length(unique(grid$eta)) > 1) d2 <- d2 + 1e6 * outer(grid$eta, grid$eta[centers], "!=")
   B <- do.call(cbind, lapply(bandwidths, function(s) {
     b <- exp(-0.5 * d2 / s^2)
     sweep(b, 2, colSums(b), "/")

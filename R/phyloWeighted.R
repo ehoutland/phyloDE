@@ -75,7 +75,19 @@ voomPhyloWeights <- function(counts, col_species, lib.size = NULL, norm.factors 
 #' last coefficient is tested. Default: intercept only.
 #' @param shifts if \code{TRUE} (the default), test a shift on every testable branch.
 #' @param model \code{"BM"} (the default) or \code{"OUfixedRoot"}.
-#' @param n_lambda,n_rho grid sizes.
+#' @param n_lambda,n_rho,n_eta grid sizes for \eqn{\lambda}, \eqn{\rho'} and \eqn{\eta}.
+#' @param species_variance if \code{TRUE} (the default), the model includes a third
+#' variance component, a species-level non-phylogenetic random effect
+#' \eqn{v \sim N(0, \sigma^2_v I_{species})}, with \eqn{\eta = \sigma^2_v / (\sigma^2_u + \sigma^2_v)}
+#' the non-phylogenetic share of the species-level variance on a grid
+#' (\code{n_eta} values). Depth- or batch-related species effects that do not
+#' follow the tree (e.g. systematic sequencing-depth differences between species
+#' at low counts) are absorbed by this term instead of being read as shifts.
+#' @param eta_null_weight the prior over the grid is estimated with a null-biased
+#' penalty on \eqn{\eta} (pseudo-observations explained only by \eqn{\eta = 0}
+#' components, as the \code{nullbiased} prior of \code{ashr}), with this weight
+#' relative to the number of genes. Default 0 (unpenalised): in simulations, the
+#' penalty only reduced the protection against species-level nuisance variance.
 #' @param weights optional genes by samples matrix of precision weights, used
 #' instead of \code{\link{voomPhyloWeights}}. \code{NULL} with a count matrix
 #' computes voom-style weights; a matrix of ones gives the unweighted fit.
@@ -97,7 +109,7 @@ voomPhyloWeights <- function(counts, col_species, lib.size = NULL, norm.factors 
 #' @export
 #'
 phyloWeightedFit <- function(counts, phy, col_species, design = NULL, shifts = TRUE,
-                             model = c("BM", "OUfixedRoot"), n_lambda = 15, n_rho = 7,
+                             model = c("BM", "OUfixedRoot"), n_lambda = 15, n_rho = 7, n_eta = 5, species_variance = TRUE, eta_null_weight = 0,
                              weights = NULL, norm.factors = NULL, squeeze = TRUE, n_profiles = 200,
                              prior_smoothing = c(0.5, 1, 2), prior_pseudocount = 1e-8) {
   model <- match.arg(model)
@@ -131,23 +143,26 @@ phyloWeightedFit <- function(counts, phy, col_species, design = NULL, shifts = T
   ## grid
   tr_u <- rescale_tree(phy_rep)
   lambda_grid <- c(0.001, stats::plogis(seq(-5, 5, length.out = n_lambda - 2)), 0.999)
+  eta_grid <- if (species_variance) c(0, stats::plogis(seq(-3, 3, length.out = n_eta - 1))) else 0
   if (model == "OUfixedRoot") {
     ab <- getBoundsSelectionStrength(tr_u)
     rb <- rho_prime(rev(ab), 1); rb <- c(max(rb[1], 1e-3), min(rb[2], 1 - 1e-3))
     rho_grid <- stats::plogis(seq(stats::qlogis(rb[1]) + 0.05, stats::qlogis(rb[2]) - 0.05, length.out = n_rho))
-    grid <- expand.grid(lambda = lambda_grid, rho_prime = rho_grid)
+    grid <- expand.grid(lambda = lambda_grid, rho_prime = rho_grid, eta = eta_grid)
     grid$alpha <- sapply(grid$rho_prime, function(r) rho_prime_inv(r, 1, ab))
-  } else grid <- data.frame(lambda = lambda_grid, rho_prime = 1, alpha = 0)
+  } else grid <- expand.grid(lambda = lambda_grid, rho_prime = 1, eta = eta_grid, alpha = 0)
   grid$rho <- 1 - grid$rho_prime
   K <- nrow(grid)
-  Cs <- lapply(seq_len(K), function(k) ape::vcv(eb_transform_tree(tr_u, model, 1, grid$alpha[k])))
+  ## species-block identity on the replicate tree (samples of the same species share a block)
+  I_sp <- outer(sample_species, sample_species, "==") * 1
+  Cs <- lapply(seq_len(K), function(k) (1 - grid$eta[k]) * ape::vcv(eb_transform_tree(tr_u, model, 1, grid$alpha[k])) + grid$eta[k] * I_sp)
   ## normalized inverse weights (mean 1 per gene)
   Dn <- (1 / W) / rowMeans(1 / W)
   cst <- log(2 * pi) + 1
 
   ## genes with similar weight profiles share a Cholesky: cluster the normalized inverse-weight
   ## profiles (log scale) into at most `n_profiles` groups and use the group centroid
-  n_profiles <- min(n_profiles, G)
+  n_profiles <- min(n_profiles, G, nrow(unique(round(log(Dn), 6))))
   if (is.finite(n_profiles) && G > n_profiles) {
     km <- stats::kmeans(log(Dn), centers = n_profiles, iter.max = 30, nstart = 1)
     prof <- exp(km$centers); grp <- km$cluster
@@ -173,7 +188,7 @@ phyloWeightedFit <- function(counts, phy, col_species, design = NULL, shifts = T
         LL[genes, k] <- -0.5 * ((n - p) * (cst + log(RSS / (n - p))) + 2 * sum(log(diag(R))) + 2 * sum(log(abs(diag(qr.R(qr(cbind(X0t, zt))))))))
       }
     }
-    pp <- eb_fit_prior(LL, grid, prior_smoothing, prior_pseudocount)
+    pp <- eb_fit_prior(LL, grid, prior_smoothing, prior_pseudocount, null_weight = if (species_variance) eta_null_weight else 0)
     Wp <- pp$posterior
     if (squeeze) {
       sq <- limma::squeezeVar(rowSums(Wp * s2), df = n - p)
@@ -185,14 +200,14 @@ phyloWeightedFit <- function(counts, phy, col_species, design = NULL, shifts = T
     Bhat <- rowSums(Wp * est)
     Shat <- sqrt(rowSums(Wp * (se2 + (est - Bhat)^2)))
     pv <- rowSums(Wp * 2 * stats::pt(-abs(est) / sqrt(se2), df = df))
-    list(Bhat = Bhat, Shat = Shat, p = pv, df = df, lambda = as.vector(Wp %*% grid$lambda), rho = as.vector(Wp %*% grid$rho), prior = pp$prior)
+    list(Bhat = Bhat, Shat = Shat, p = pv, df = df, lambda = as.vector(Wp %*% grid$lambda), rho = as.vector(Wp %*% grid$rho), eta = as.vector(Wp %*% grid$eta), prior = pp$prior)
   }
   out <- lapply(tests, function(tt) run_test(tt$X0, tt$z))
   nm <- names(tests)
   mk <- function(f) { m <- sapply(out, `[[`, f); if (is.null(dim(m))) m <- matrix(m, G); dimnames(m) <- list(rownames(Y), nm); m }
   Bhat <- mk("Bhat"); Shat <- mk("Shat")
   res <- list(Bhat = Bhat, Shat = Shat, t = Bhat / Shat, p.value = mk("p"), df = out[[1]]$df,
-              lambda = mk("lambda"), rho = mk("rho"), nuisance = "eb_weighted", branches = branches, Z = Z,
+              lambda = mk("lambda"), rho = mk("rho"), eta = mk("eta"), nuisance = "eb_weighted", branches = branches, Z = Z,
               priors = sapply(out, `[[`, "prior"), grid = grid, model = model, phy = phy, phy_rep = phy_rep,
               weights = W, E = Y, design = design, col_species = sample_species, genes = rownames(Y))
   class(res) <- "PhyloShiftFit"

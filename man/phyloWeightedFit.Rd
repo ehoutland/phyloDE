@@ -13,6 +13,9 @@ phyloWeightedFit(
   model = c("BM", "OUfixedRoot"),
   n_lambda = 15,
   n_rho = 7,
+  n_eta = 5,
+  species_variance = TRUE,
+  eta_null_weight = 0,
   weights = NULL,
   norm.factors = NULL,
   squeeze = TRUE,
@@ -36,7 +39,21 @@ last coefficient is tested. Default: intercept only.}
 
 \item{model}{\code{"BM"} (the default) or \code{"OUfixedRoot"}.}
 
-\item{n_lambda, n_rho}{grid sizes.}
+\item{n_lambda, n_rho, n_eta}{grid sizes for \eqn{\lambda}, \eqn{\rho'} and \eqn{\eta}.}
+
+\item{species_variance}{if \code{TRUE} (the default), the model includes a third
+variance component, a species-level non-phylogenetic random effect
+\eqn{v \sim N(0, \sigma^2_v I_{species})}, with \eqn{\eta = \sigma^2_v / (\sigma^2_u + \sigma^2_v)}
+the non-phylogenetic share of the species-level variance on a grid
+(\code{n_eta} values). Depth- or batch-related species effects that do not
+follow the tree (e.g. systematic sequencing-depth differences between species
+at low counts) are absorbed by this term instead of being read as shifts.}
+
+\item{eta_null_weight}{the prior over the grid is estimated with a null-biased
+penalty on \eqn{\eta} (pseudo-observations explained only by \eqn{\eta = 0}
+components, as the \code{nullbiased} prior of \code{ashr}), with this weight
+relative to the number of genes. Default 0 (unpenalised): in simulations, the
+penalty only reduced the protection against species-level nuisance variance.}
 
 \item{weights}{optional genes by samples matrix of precision weights, used
 instead of \code{\link{voomPhyloWeights}}. \code{NULL} with a count matrix

@@ -8,7 +8,8 @@ eb_fit_prior(
   LL,
   grid,
   prior_smoothing = c(0.5, 1, 2),
-  prior_pseudocount = 1e-08
+  prior_pseudocount = 1e-08,
+  null_weight = 0
 )
 }
 \arguments{
