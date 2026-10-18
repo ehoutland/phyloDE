@@ -116,6 +116,8 @@ crossMash <- function(Bhat, Shat, cor = 0, df = Inf, shared_ratios = c(0.5, 1, 2
   if (!requireNamespace("mashr", quietly = TRUE)) stop("Package 'mashr' is needed for function 'crossMash'.")
   if (!identical(colnames(Bhat), c("evo", "case")) || !identical(dim(Bhat), dim(Shat))) stop("`Bhat` and `Shat` must be genes by 2 matrices with columns 'evo' and 'case'.")
   V <- matrix(c(1, cor, cor, 1), 2, dimnames = list(c("evo", "case"), c("evo", "case")))
+  ## with finite df, mash converts t to z and an estimate of exactly 0 (e.g. an edgeR coefficient for a peak without reads) gives 0/0
+  if (any(is.finite(df))) Bhat[Bhat == 0] <- 1e-10
   data <- mashr::mash_set_data(Bhat, Shat, df = df, V = V)
   ## patterns: singletons; and for each variance ratio r = var(case)/var(evo), correlations
   ## +1 / +0.5 (same sign), -1 / -0.5 (opposite sign) and 0 (independent)
