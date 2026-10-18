@@ -71,3 +71,23 @@ test_that("drift_prior = 0 is the plain mash fit and the default lowers the shif
   expect_equal(pm1$drift_prior, 0.5)
   expect_true(all(pm1$branch_prob[1:5, "sp3"] > 0.9))   # a strong shift survives a heavy penalty
 })
+
+test_that("sample quality weights downweight outlier libraries in both routes", {
+  set.seed(4)
+  C <- counts; bad <- c(2, 9)   # one library of sp1 and one of sp3 with extra noise
+  C[, bad] <- round(C[, bad] * exp(matrix(rnorm(G * 2, 0, 1), ncol = 2)))
+  w <- sampleQualityWeights(C, species)
+  expect_length(w, n); expect_named(w, ids)
+  expect_true(all(w[bad] < 0.5) && median(w[-bad]) > 0.8)
+  for (m in c("limma", "edgeR")) {
+    norm <- function(x) if (m == "limma") lengthNormalizeRNASeq(x, lengthNormalization = "none", dataTransformation = "log2") else x
+    ref <- speciesStats(norm(counts), species, method = m)   # clean data, same route
+    s0 <- speciesStats(norm(C), species, method = m); s1 <- speciesStats(norm(C), species, method = m, sample_weights = w)
+    expect_equal(dim(s1$se), dim(s0$se))
+    ## weighting brings the means of the affected species closer to the clean-data means
+    for (s in c("sp1", "sp3")) expect_lt(mean((s1$mean[, s] - ref$mean[, s])^2), mean((s0$mean[, s] - ref$mean[, s])^2))
+  }
+  expect_error(speciesStats(C, species, method = "edgeR", sample_weights = w[-1]), "sample_weights")
+  wf <- phyloWeightedFit(C, tree, species, model = "BM", n_lambda = 7, sample_weights = w)
+  expect_s3_class(wf, "PhyloShiftFit")
+})

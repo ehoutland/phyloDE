@@ -17,6 +17,7 @@ phyloWeightedFit(
   species_variance = TRUE,
   eta_null_weight = 0,
   weights = NULL,
+  sample_weights = NULL,
   norm.factors = NULL,
   squeeze = TRUE,
   n_profiles = 200,
@@ -58,6 +59,9 @@ penalty only reduced the protection against species-level nuisance variance.}
 \item{weights}{optional genes by samples matrix of precision weights, used
 instead of \code{\link{voomPhyloWeights}}. \code{NULL} with a count matrix
 computes voom-style weights; a matrix of ones gives the unweighted fit.}
+
+\item{sample_weights}{an optional vector of sample quality weights (one per
+sample, see \code{\link{sampleQualityWeights}}), multiplied into the precision weights.}
 
 \item{norm.factors}{normalization factors for \code{\link{voomPhyloWeights}}.}
 

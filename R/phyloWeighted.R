@@ -88,6 +88,8 @@ voomPhyloWeights <- function(counts, col_species, lib.size = NULL, norm.factors 
 #' components, as the \code{nullbiased} prior of \code{ashr}), with this weight
 #' relative to the number of genes. Default 0 (unpenalised): in simulations, the
 #' penalty only reduced the protection against species-level nuisance variance.
+#' @param sample_weights an optional vector of sample quality weights (one per
+#' sample, see \code{\link{sampleQualityWeights}}), multiplied into the precision weights.
 #' @param weights optional genes by samples matrix of precision weights, used
 #' instead of \code{\link{voomPhyloWeights}}. \code{NULL} with a count matrix
 #' computes voom-style weights; a matrix of ones gives the unweighted fit.
@@ -110,7 +112,7 @@ voomPhyloWeights <- function(counts, col_species, lib.size = NULL, norm.factors 
 #'
 phyloWeightedFit <- function(counts, phy, col_species, design = NULL, shifts = TRUE,
                              model = c("BM", "OUfixedRoot"), n_lambda = 15, n_rho = 7, n_eta = 5, species_variance = TRUE, eta_null_weight = 0,
-                             weights = NULL, norm.factors = NULL, squeeze = TRUE, n_profiles = 200,
+                             weights = NULL, sample_weights = NULL, norm.factors = NULL, squeeze = TRUE, n_profiles = 200,
                              prior_smoothing = c(0.5, 1, 2), prior_pseudocount = 1e-8) {
   model <- match.arg(model)
   if (is.list(counts) && !is.null(counts$E)) { E <- counts$E; W <- counts$weights }
@@ -120,6 +122,10 @@ phyloWeightedFit <- function(counts, phy, col_species, design = NULL, shifts = T
   }
   if (!is.null(weights)) W <- weights
   n <- ncol(E); G <- nrow(E)
+  if (!is.null(sample_weights)) {
+    if (length(sample_weights) != n || any(sample_weights <= 0)) stop("`sample_weights` must be one positive weight per sample.")
+    W <- W * rep(sample_weights, each = G)
+  }
   y <- check_expression_matrix(E)
   phy_rep <- check_tree(phy, y, col_species)
   Y <- checkParamMatrix(y$exprs, "expression matrix", phy_rep)

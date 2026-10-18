@@ -39,6 +39,12 @@
 #' \code{-Inf} with an infinite standard error; with a prior count their
 #' estimate and standard error (evaluated at the shrunk means) are finite
 #' but are set by the prior count rather than by the data (see \code{dropout}).
+#' @param sample_weights an optional vector of sample quality weights (one per
+#' sample, e.g. from \code{\link{sampleQualityWeights}}): the variance of a
+#' sample's observations is taken as proportional to \code{1 / weight}. With
+#' \code{"limma"} they are the array weights of \code{\link[limma]{lmFit}}; with
+#' \code{"edgeR"} they are observation weights of \code{\link[edgeR]{glmQLFit}},
+#' and the Fisher information is weighted accordingly.
 #' @param ... further arguments passed to \code{\link[edgeR]{glmQLFit}}.
 #'
 #' @return An object of class \code{SpeciesStats}, a list with
@@ -59,7 +65,7 @@
 #' @export
 #'
 speciesStats <- function(object, col_species = NULL, method = c("limma", "edgeR"),
-                         covariates = NULL, trend = TRUE, legacy = FALSE, prior_count = 0.125, ...) {
+                         covariates = NULL, sample_weights = NULL, trend = TRUE, legacy = FALSE, prior_count = 0.125, ...) {
   method <- match.arg(method)
   if (method == "edgeR") {
     if (!requireNamespace("edgeR", quietly = TRUE)) stop("Package 'edgeR' is needed for `method = 'edgeR'`.")
@@ -78,31 +84,26 @@ speciesStats <- function(object, col_species = NULL, method = c("limma", "edgeR"
   if (!is.null(covariates)) {
     covariates <- as.matrix(covariates)
     if (nrow(covariates) != n) stop("`covariates` must have one row per sample.")
-    X <- cbind(X, covariates)
+    ## covariates orthogonalized to the species space: the species coefficients stay species means
+    X <- cbind(X, qr.resid(qr(X), covariates))
   }
+  if (!is.null(sample_weights) && (length(sample_weights) != n || any(sample_weights <= 0))) stop("`sample_weights` must be one positive weight per sample.")
 
   if (method == "limma") {
     G <- nrow(y)
-    if (!is.null(covariates)) {
-      ## project the covariates out (orthogonally to the species space)
-      Xs <- X[, seq_len(S), drop = FALSE]
-      Wc <- qr.resid(qr(Xs), covariates)
-      y <- y - tcrossprod(y %*% Wc %*% solve(crossprod(Wc)), Wc)
-    }
-    M <- t(apply(y, 1, function(v) tapply(v, sp, mean)))
-    colnames(M) <- levels(sp)
-    resid <- y - M[, as.integer(sp), drop = FALSE]
     df_res <- n - ncol(X)
     if (df_res < 2) stop("Too few residual degrees of freedom to estimate the within-species variance.")
-    s2w <- rowSums(resid^2) / df_res
-    sq <- if (trend) limma::squeezeVar(s2w, df = df_res, covariate = rowMeans(y)) else limma::squeezeVar(s2w, df = df_res)
+    fit <- limma::lmFit(y, X, weights = sample_weights)
+    M <- fit$coefficients[, seq_len(S), drop = FALSE]
+    sq <- if (trend) limma::squeezeVar(fit$sigma^2, df = df_res, covariate = fit$Amean) else limma::squeezeVar(fit$sigma^2, df = df_res)
     s2post <- sq$var.post
     df <- df_res + if (is.finite(sq$df.prior)) sq$df.prior else 0
-    se <- sqrt(s2post) %*% t(1 / sqrt(r))
+    se <- sqrt(s2post) * fit$stdev.unscaled[, seq_len(S), drop = FALSE]
     dropout <- M <= rep(apply(y, 1, min), S) + 1e-8
     dimnames(se) <- dimnames(dropout) <- dimnames(M)
     if (any(r == 1)) message("Species with a single sample: ", paste(levels(sp)[r == 1], collapse = ", "), ". Their within-species variance is pooled from the other species.")
   } else {
+    if (!is.null(sample_weights)) y$weights <- matrix(sample_weights, nrow(counts), n, byrow = TRUE)
     if (is.null(y$common.dispersion) && is.null(y$trended.dispersion) && is.null(y$tagwise.dispersion) && legacy) y <- edgeR::estimateDisp(y, X)
     fit <- edgeR::glmQLFit(y, X, legacy = legacy, prior.count = prior_count, ...)
     G <- nrow(counts)
@@ -111,10 +112,11 @@ speciesStats <- function(object, col_species = NULL, method = c("limma", "edgeR"
     ## whose effect on the species blocks is ignored), evaluated at the means implied by the reported
     ## (prior-count shrunk) coefficients: for a species without any read, the fitted mean is 0 and the
     ## information would vanish, while the coefficient itself is finite only because of the prior count.
-    mu <- exp(fit$coefficients %*% t(X) + fit$offset)
+    mu <- exp(fit$coefficients %*% t(X) + as.matrix(fit$offset))
     phi <- fit$dispersion
     if (length(phi) == 1) phi <- rep(phi, G)
-    info <- (mu / (1 + phi * mu)) %*% X[, seq_len(S), drop = FALSE]
+    wq <- if (is.null(sample_weights)) 1 else rep(sample_weights, each = G)
+    info <- (wq * mu / (1 + phi * mu)) %*% X[, seq_len(S), drop = FALSE]
     var_post <- if (!is.null(fit$var.post)) fit$var.post else fit$s2.post
     se <- sqrt(var_post / info)
     M <- beta / log(2); se <- se / log(2)
@@ -265,4 +267,39 @@ phyloShiftGLS <- function(stats, phy, design = NULL, shifts = TRUE, model = c("B
               genes = stats$genes)
   class(res) <- "PhyloShiftFit"
   res
+}
+
+#' @title Sample quality weights
+#'
+#' @description
+#' One precision weight per sample, estimated across genes as in
+#' \code{\link[limma]{arrayWeights}} (via \code{\link[limma]{voomWithQualityWeights}}):
+#' a sample whose observations scatter more around the fitted values of the
+#' species (plus covariates) design than the others gets a weight below 1.
+#' Outlier libraries are downweighted rather than removed. The weights can be
+#' passed to \code{\link{speciesStats}} (\code{sample_weights}) and
+#' \code{\link{phyloWeightedFit}} (\code{sample_weights}).
+#'
+#' @param counts genes by samples matrix of counts, or a \code{\link[edgeR]{DGEList}}.
+#' @param col_species the species of each sample.
+#' @param covariates optional samples by covariates matrix (no intercept), as in \code{\link{speciesStats}}.
+#' @param norm.factors optional normalization factors (TMM by default).
+#' @param ... further arguments passed to \code{\link[limma]{voomWithQualityWeights}}.
+#'
+#' @return A named numeric vector of weights (one per sample).
+#'
+#' @export
+#'
+sampleQualityWeights <- function(counts, col_species, covariates = NULL, norm.factors = NULL, ...) {
+  if (!requireNamespace("edgeR", quietly = TRUE)) stop("Package 'edgeR' is needed for function 'sampleQualityWeights'.")
+  y <- if (inherits(counts, "DGEList")) counts else edgeR::DGEList(as.matrix(counts))
+  if (!is.null(norm.factors)) y$samples$norm.factors <- norm.factors else if (all(y$samples$norm.factors == 1)) y <- edgeR::normLibSizes(y)
+  sp <- factor(col_species)
+  X <- if (nlevels(sp) > 1) stats::model.matrix(~ 0 + sp) else matrix(1, ncol(y), 1)
+  colnames(X) <- levels(sp)
+  if (!is.null(covariates)) X <- cbind(X, as.matrix(covariates))
+  v <- limma::voomWithQualityWeights(y, X, plot = FALSE, ...)
+  w <- v$targets$sample.weights
+  names(w) <- colnames(y)
+  w
 }

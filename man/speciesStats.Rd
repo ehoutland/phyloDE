@@ -9,6 +9,7 @@ speciesStats(
   col_species = NULL,
   method = c("limma", "edgeR"),
   covariates = NULL,
+  sample_weights = NULL,
   trend = TRUE,
   legacy = FALSE,
   prior_count = 0.125,
@@ -29,6 +30,13 @@ factors and, if relevant, offsets).}
 \item{covariates}{an optional samples by covariates matrix of sample-level
 covariates (no intercept) to be regressed out. With \code{"limma"}, the
 covariates are projected out of the data before taking the species means.}
+
+\item{sample_weights}{an optional vector of sample quality weights (one per
+sample, e.g. from \code{\link{sampleQualityWeights}}): the variance of a
+sample's observations is taken as proportional to \code{1 / weight}. With
+\code{"limma"} they are the array weights of \code{\link[limma]{lmFit}}; with
+\code{"edgeR"} they are observation weights of \code{\link[edgeR]{glmQLFit}},
+and the Fisher information is weighted accordingly.}
 
 \item{trend}{for \code{"limma"}, whether the variance moderation allows for a
 mean-variance trend (default \code{TRUE}).}
