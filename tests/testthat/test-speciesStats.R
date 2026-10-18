@@ -56,3 +56,18 @@ test_that("phyloMash accepts SpeciesStats input", {
   expect_equal(pm2$stats_method, "limma")
   expect_true(all(pm2$branch_prob[1:5, "sp3"] > 0.9))
 })
+
+test_that("drift_prior = 0 is the plain mash fit and the default lowers the shift weight", {
+  se <- speciesStats(counts, species, method = "edgeR")
+  pm0 <- phyloMash(se, tree, model = "BM", n_grid = 8, drift_prior = 0)
+  g0 <- pm0$mash$fitted_g
+  data <- mashr::mash_set_data(pm0$species_means %*% t(pm0$L), sqrt(pm0$se_species^2 %*% t(pm0$L^2)), df = pm0$df,
+                               V = stats::cov2cor(pm0$L %*% diag(colMeans(pm0$se_species^2) / mean(pm0$se_species^2)) %*% t(pm0$L)))
+  m_ref <- mashr::mash(data, Ulist = g0$Ulist, grid = g0$grid, outputlevel = 1, verbose = FALSE)
+  expect_equal(unname(g0$pi), unname(m_ref$fitted_g$pi), tolerance = 1e-6)
+  shift_w <- function(pm) sum(pm$pattern_weights[grepl("^shift_", names(pm$pattern_weights)) & !grepl("_r1$", names(pm$pattern_weights))])
+  pm1 <- phyloMash(se, tree, model = "BM", n_grid = 8, drift_prior = 0.5)
+  expect_lt(shift_w(pm1), shift_w(pm0))
+  expect_equal(pm1$drift_prior, 0.5)
+  expect_true(all(pm1$branch_prob[1:5, "sp3"] > 0.9))   # a strong shift survives a heavy penalty
+})

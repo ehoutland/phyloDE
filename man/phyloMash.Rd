@@ -16,6 +16,7 @@ phyloMash(
   identity = TRUE,
   trend = TRUE,
   n_grid = 15,
+  drift_prior = 0.02,
   fit_subset = NULL,
   covariates = NULL,
   patterns = c("tree", "canonical"),
@@ -55,6 +56,19 @@ variances allows for a mean-variance trend (\code{\link[limma]{squeezeVar}} with
 
 \item{n_grid}{number of scales in the mash grid (log-spaced over the range chosen by \code{mash}).}
 
+\item{drift_prior}{pseudo-observations explained by the no-shift patterns only
+(null, drift, drift plus noise, identity, and shift patterns below
+\code{min_shift_ratio}), as a fraction of the number of genes used to fit the
+mixture weights; see \code{\link{fit_mash_weights}}. With few species the
+drift and drift-plus-shift patterns explain most genes equally well and the
+fitted weight of the shift patterns, hence the posterior shift probabilities
+of unshifted genes, is inflated; the pseudo-observations resolve this tie in
+favour of no shift. The default \code{0.02} keeps the realized false discovery
+rate of \code{\link{callShifts}} at or below its nominal level up to 0.05 in
+simulations with 4 to 7 species, for a loss of about 0.05 in power; \code{0}
+is the plain \code{mash} fit, which is anti-conservative with few species
+(realized 0.07-0.10 at nominal 0.05 on branches, 0.13-0.14 on genes with 4 species).}
+
 \item{fit_subset}{if not \code{NULL}, the number of (randomly chosen) genes used to
 estimate the mixture weights, which are then applied to all genes
 (faster for large data sets).}
@@ -70,7 +84,7 @@ only (null, singletons, equal effects, simple heterogeneity, identity), as in
 as a shift on the terminal branch of s, and internal branches get no shift
 probability. Useful as a reference for what the tree-derived patterns add.}
 
-\item{...}{further arguments passed to \code{\link[mashr]{mash}}.}
+\item{...}{further arguments passed to \code{\link{fit_mash_weights}} (e.g. \code{control} for \code{mixsqp}).}
 }
 \value{
 An object of class \code{PhyloMash}, a list with

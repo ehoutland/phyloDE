@@ -96,6 +96,11 @@ phyloMashCross <- function(counts, phy, col_species, case, focal, model = c("BM"
 #' elsewhere, e.g. the focal-branch shift from a cross-species data set and the
 #' condition effect from an independent case/control data set of the focal
 #' species (then \code{cor = 0}: the two estimates come from disjoint samples).
+#' With few species (four, say), take the focal-branch shift from the
+#' species-level fit, \code{\link{phyloShiftGLS}} on \code{\link{speciesStats}}
+#' with \code{method = "edgeR"}: its standard error is calibrated where the
+#' sample-level \code{\link{phyloWeightedFit}} is conservative, which roughly
+#' doubles the recall of the shared classes in the package simulations.
 #'
 #' @param Bhat genes by 2 matrix of estimates, columns \code{evo} and \code{case}.
 #' @param Shat genes by 2 matrix of their standard errors.

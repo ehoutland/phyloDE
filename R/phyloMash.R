@@ -52,6 +52,18 @@
 #' @param trend if \code{TRUE} (the default), the moderation of the within-species
 #' variances allows for a mean-variance trend (\code{\link[limma]{squeezeVar}} with \code{covariate}).
 #' @param n_grid number of scales in the mash grid (log-spaced over the range chosen by \code{mash}).
+#' @param drift_prior pseudo-observations explained by the no-shift patterns only
+#' (null, drift, drift plus noise, identity, and shift patterns below
+#' \code{min_shift_ratio}), as a fraction of the number of genes used to fit the
+#' mixture weights; see \code{\link{fit_mash_weights}}. With few species the
+#' drift and drift-plus-shift patterns explain most genes equally well and the
+#' fitted weight of the shift patterns, hence the posterior shift probabilities
+#' of unshifted genes, is inflated; the pseudo-observations resolve this tie in
+#' favour of no shift. The default \code{0.02} keeps the realized false discovery
+#' rate of \code{\link{callShifts}} at or below its nominal level up to 0.05 in
+#' simulations with 4 to 7 species, for a loss of about 0.05 in power; \code{0}
+#' is the plain \code{mash} fit, which is anti-conservative with few species
+#' (realized 0.07-0.10 at nominal 0.05 on branches, 0.13-0.14 on genes with 4 species).
 #' @param fit_subset if not \code{NULL}, the number of (randomly chosen) genes used to
 #' estimate the mixture weights, which are then applied to all genes
 #' (faster for large data sets).
@@ -62,7 +74,7 @@
 #' \code{\link[mashr]{mash_estimate_corr_em}}; a singleton pattern on species s counts
 #' as a shift on the terminal branch of s, and internal branches get no shift
 #' probability. Useful as a reference for what the tree-derived patterns add.
-#' @param ... further arguments passed to \code{\link[mashr]{mash}}.
+#' @param ... further arguments passed to \code{\link{fit_mash_weights}} (e.g. \code{control} for \code{mixsqp}).
 #'
 #' @return An object of class \code{PhyloMash}, a list with
 #' \describe{
@@ -82,7 +94,7 @@
 #'
 phyloMash <- function(object, phy, col_species = NULL, model = c("BM", "OUfixedRoot"),
                       rho_prime_grid = c(0.1, 0.5), shift_ratios = c(1, 4, 16, 64), min_shift_ratio = 4,
-                      noise_ratios = c(0.25, 1, 4), identity = TRUE, trend = TRUE, n_grid = 15,
+                      noise_ratios = c(0.25, 1, 4), identity = TRUE, trend = TRUE, n_grid = 15, drift_prior = 0.02,
                       fit_subset = NULL, covariates = NULL, patterns = c("tree", "canonical"), ...) {
   if (!requireNamespace("mashr", quietly = TRUE)) stop("Package 'mashr' is needed for function 'phyloMash'.")
   model <- match.arg(model)
@@ -161,7 +173,7 @@ phyloMash <- function(object, phy, col_species = NULL, model = c("BM", "OUfixedR
     tag[paste0("singleton_", species[S])] <- species[S]
   }
 
-  ## mash fit
+  ## mash fit: mixture weights on a (sub)set of genes, with the no-shift pseudo-observations, then posteriors for all genes
   g_auto <- mashr:::autoselect_grid(data, sqrt(2))
   grid <- exp(seq(log(min(g_auto)), log(max(g_auto)), length.out = n_grid))
   if (patterns == "canonical") {
@@ -169,15 +181,14 @@ phyloMash <- function(object, phy, col_species = NULL, model = c("BM", "OUfixedR
     Vem <- mashr::mash_estimate_corr_em(data, Ulist, details = TRUE)
     data <- mashr::mash_update_data(data, V = Vem$V)
   }
+  data_fit <- data
   if (!is.null(fit_subset) && fit_subset < G) {
     sub <- sort(sample.int(G, fit_subset))
     df_sub <- if (is.matrix(df)) df[sub, , drop = FALSE] else df
-    data_sub <- mashr::mash_set_data(Bhat[sub, , drop = FALSE], Shat[sub, , drop = FALSE], df = df_sub, V = data$V)
-    m_sub <- mashr::mash(data_sub, Ulist, grid = grid, outputlevel = 1, verbose = FALSE, ...)
-    m <- mashr::mash(data, g = ashr::get_fitted_g(m_sub), fixg = TRUE, outputlevel = 2, verbose = FALSE)
-  } else {
-    m <- mashr::mash(data, Ulist, grid = grid, outputlevel = 2, verbose = FALSE, ...)
+    data_fit <- mashr::mash_set_data(Bhat[sub, , drop = FALSE], Shat[sub, , drop = FALSE], df = df_sub, V = data$V)
   }
+  g <- fit_mash_weights(data_fit, Ulist, grid, no_shift = c("null", names(tag)[tag == "none"]), pseudo = drift_prior, ...)
+  m <- mashr::mash(data, g = g, fixg = TRUE, outputlevel = 2, verbose = FALSE)
 
   ## posterior probabilities of the shift patterns
   w <- m$posterior_weights
@@ -194,10 +205,53 @@ phyloMash <- function(object, phy, col_species = NULL, model = c("BM", "OUfixedR
   res <- list(mash = m, branch_prob = branch_prob, shift_prob = rowSums(branch_prob),
               top_branch = labels[max.col(branch_prob, ties.method = "first")],
               pm_species = pm_species, species_means = M, se_species = SE, dropout = stats$dropout[, ord, drop = FALSE],
-              pattern_weights = pattern_weights, branches = branches, L = L, df = df,
+              pattern_weights = pattern_weights, branches = branches, L = L, df = df, drift_prior = drift_prior,
               model = model, patterns = patterns, phy = phy, stats_method = stats$method, genes = stats$genes)
   class(res) <- "PhyloMash"
   return(res)
+}
+
+#' @title Fit the mash mixture weights with pseudo-observations on a group of components
+#'
+#' @description
+#' The weights of a \code{\link[mashr]{mash}} mixture are the maximizer of the
+#' marginal likelihood of the genes, with a Dirichlet prior (\code{mash}'s
+#' default: \code{nullweight} pseudo-observations on the null point mass). Here
+#' \code{pseudo} times the number of genes extra pseudo-observations are added
+#' that can be explained by any of the \code{no_shift} components (null, drift,
+#' ...) but by none of the others: a Dirichlet prior on the split between the
+#' "no shift" group and the shift components. When the likelihood is flat
+#' between the two (few species: drift and drift-plus-shift patterns explain
+#' most genes equally well), the penalty resolves the tie in favour of no
+#' shift; genes carrying a real shift still pull their weight. The weights are
+#' then fixed for the posterior computation (\code{mash(..., fixg = TRUE)}).
+#'
+#' @param data a mash data object (the genes used to fit the weights).
+#' @param Ulist,grid the covariance patterns and scales (as in \code{mash}).
+#' @param no_shift names of the components counting as "no shift" (pattern
+#' names of \code{Ulist}, and \code{"null"} for the point mass).
+#' @param pseudo pseudo-observations on the no-shift group, as a fraction of the
+#' number of genes in \code{data}.
+#' @param nullweight prior weight of the null point mass, as in \code{mash} (default 10).
+#' @param control passed to \code{\link[mixsqp]{mixsqp}}.
+#' @param ... ignored (so that \code{mash} arguments can be passed through).
+#'
+#' @return A fitted \code{g} (list \code{pi}, \code{Ulist}, \code{grid}, \code{usepointmass}).
+#'
+#' @keywords internal
+#'
+fit_mash_weights <- function(data, Ulist, grid, no_shift = "null", pseudo = 0, nullweight = 10, control = list(), ...) {
+  xU <- mashr:::expand_cov(Ulist, grid, usepointmass = TRUE)
+  L <- exp(mashr:::calc_relative_lik_matrix(data, xU)$loglik_matrix)
+  K <- ncol(L); J <- nrow(L)
+  base <- c("null", sub("\\.[0-9]+$", "", names(xU)[-1]))
+  A <- rbind(as.numeric(seq_len(K) == 1), L); w <- c(nullweight - 1, rep(1, J))
+  if (pseudo > 0) { A <- rbind(A, as.numeric(base %in% no_shift)); w <- c(w, pseudo * J) }
+  keep <- w > 0
+  ctrl <- utils::modifyList(list(verbose = FALSE, eps = 1e-6, numiter.em = 20), control)
+  out <- mixsqp::mixsqp(A[keep, , drop = FALSE], w[keep], control = ctrl)
+  pi <- out$x / sum(out$x); names(pi) <- names(xU)
+  list(pi = pi, Ulist = Ulist, grid = grid, usepointmass = TRUE)
 }
 
 #' @title Call shifts at a Bayesian false discovery rate

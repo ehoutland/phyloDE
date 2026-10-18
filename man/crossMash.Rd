@@ -46,4 +46,9 @@ The mash step of \code{\link{phyloMashCross}}, for estimates obtained
 elsewhere, e.g. the focal-branch shift from a cross-species data set and the
 condition effect from an independent case/control data set of the focal
 species (then \code{cor = 0}: the two estimates come from disjoint samples).
+With few species (four, say), take the focal-branch shift from the
+species-level fit, \code{\link{phyloShiftGLS}} on \code{\link{speciesStats}}
+with \code{method = "edgeR"}: its standard error is calibrated where the
+sample-level \code{\link{phyloWeightedFit}} is conservative, which roughly
+doubles the recall of the shared classes in the package simulations.
 }
