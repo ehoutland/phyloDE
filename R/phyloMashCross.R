@@ -82,8 +82,36 @@ phyloMashCross <- function(counts, phy, col_species, case, focal, model = c("BM"
   cor_pair <- cross_sampling_correlation(fit, focal)
   Bhat <- cbind(evo = fit$Bhat[, focal], case = fit$Bhat[, "case"])
   Shat <- cbind(evo = fit$Shat[, focal], case = fit$Shat[, "case"])
-  V <- matrix(c(1, cor_pair, cor_pair, 1), 2, dimnames = list(c("evo", "case"), c("evo", "case")))
-  data <- mashr::mash_set_data(Bhat, Shat, df = fit$df, V = V)
+  res <- crossMash(Bhat, Shat, cor = cor_pair, df = fit$df, shared_ratios = shared_ratios, shared_cor = shared_cor,
+                   independent = independent, n_grid = n_grid)
+  res$fit <- fit; res$focal <- focal
+  class(res) <- "PhyloMashCross"
+  res
+}
+
+#' @title Two-effect mash: evolutionary shift versus condition effect
+#'
+#' @description
+#' The mash step of \code{\link{phyloMashCross}}, for estimates obtained
+#' elsewhere, e.g. the focal-branch shift from a cross-species data set and the
+#' condition effect from an independent case/control data set of the focal
+#' species (then \code{cor = 0}: the two estimates come from disjoint samples).
+#'
+#' @param Bhat genes by 2 matrix of estimates, columns \code{evo} and \code{case}.
+#' @param Shat genes by 2 matrix of their standard errors.
+#' @param cor the sampling correlation of the two estimates under the null.
+#' @param df degrees of freedom of the estimates (scalar, vector or genes by 2 matrix), or \code{Inf}.
+#' @inheritParams phyloMashCross
+#'
+#' @return A list as \code{\link{phyloMashCross}}, without \code{fit}.
+#'
+#' @export
+#'
+crossMash <- function(Bhat, Shat, cor = 0, df = Inf, shared_ratios = c(0.5, 1, 2), shared_cor = 1, independent = FALSE, n_grid = 15) {
+  if (!requireNamespace("mashr", quietly = TRUE)) stop("Package 'mashr' is needed for function 'crossMash'.")
+  if (!identical(colnames(Bhat), c("evo", "case")) || !identical(dim(Bhat), dim(Shat))) stop("`Bhat` and `Shat` must be genes by 2 matrices with columns 'evo' and 'case'.")
+  V <- matrix(c(1, cor, cor, 1), 2, dimnames = list(c("evo", "case"), c("evo", "case")))
+  data <- mashr::mash_set_data(Bhat, Shat, df = df, V = V)
   ## patterns: singletons; and for each variance ratio r = var(case)/var(evo), correlations
   ## +1 / +0.5 (same sign), -1 / -0.5 (opposite sign) and 0 (independent)
   Ulist <- list(evo_only = matrix(c(1, 0, 0, 0), 2), case_only = matrix(c(0, 0, 0, 1), 2))
@@ -124,12 +152,10 @@ phyloMashCross <- function(counts, phy, col_species, case, focal, model = c("BM"
                       independent = 0)
   class_prob <- class_prob / pmax(rowSums(class_prob), 1e-12)
   dimnames(class_prob) <- list(rownames(Bhat), cls)
-  res <- list(mash = m, Bhat = Bhat, Shat = Shat, lfsr = lfsr, pm = pm, psd = psd,
-              class_prob = class_prob, pattern_prob = pattern_prob,
-              top_class = cls[max.col(class_prob, ties.method = "first")],
-              pattern_weights = pattern_weights, V = V, fit = fit, focal = focal, genes = rownames(Bhat))
-  class(res) <- "PhyloMashCross"
-  res
+  list(mash = m, Bhat = Bhat, Shat = Shat, lfsr = lfsr, pm = pm, psd = psd,
+       class_prob = class_prob, pattern_prob = pattern_prob,
+       top_class = cls[max.col(class_prob, ties.method = "first")],
+       pattern_weights = pattern_weights, V = V, genes = rownames(Bhat))
 }
 
 #' @title Sampling correlation of the focal-branch and case estimates

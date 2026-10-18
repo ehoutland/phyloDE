@@ -60,3 +60,20 @@ test_that("phyloMashCross classifies evo-only and case-only genes", {
   expect_true(abs(cr$V[1, 2]) < 1)
   expect_error(phyloMashCross(counts, tree, species, as.numeric(species == "sp1"), focal = "sp4"), "focal")
 })
+
+test_that("crossMash classifies independent estimates (cor = 0)", {
+  set.seed(5); G <- 600; k <- 50
+  b <- matrix(0, G, 2, dimnames = list(paste0("g", 1:G), c("evo", "case")))
+  b[1:k, "evo"] <- sample(c(-1, 1), k, TRUE) * runif(k, 4, 8)                          # evo only
+  b[k + 1:k, "case"] <- sample(c(-1, 1), k, TRUE) * runif(k, 4, 8)                      # case only
+  s <- sample(c(-1, 1), k, TRUE) * runif(k, 4, 8); b[2 * k + 1:k, ] <- cbind(s, s)     # shared, same sign
+  Bhat <- b + matrix(rnorm(2 * G), G); Shat <- matrix(1, G, 2, dimnames = dimnames(b))
+  cm <- crossMash(Bhat, Shat, cor = 0)
+  expect_equal(cm$V[1, 2], 0)
+  expect_true(all(abs(rowSums(cm$class_prob) - 1) < 1e-8))
+  expect_gt(mean(cm$top_class[1:k] == "evo_only"), 0.8)
+  expect_gt(mean(cm$top_class[k + 1:k] == "case_only"), 0.8)
+  expect_gt(mean(cm$top_class[2 * k + 1:k] == "shared_same"), 0.8)
+  expect_gt(mean(cm$top_class[(3 * k + 1):G] == "null"), 0.8)
+  expect_error(crossMash(Bhat[, 2:1], Shat), "columns")
+})
