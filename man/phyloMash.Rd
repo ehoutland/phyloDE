@@ -67,7 +67,8 @@ in the package simulations).}
 \item{min_fold}{factorized prior: the smallest fold change counted as a shift
 (default 1.25): \code{branch_prob} is the posterior probability of a shift of
 more than \code{log2(min_fold)} in absolute value on the log2 scale; \code{1}
-counts any non-zero shift. It does not change the fitted prior.}
+counts any non-zero shift. It does not change the fitted prior: see
+\code{\link{rescoreShifts}} to change it without refitting.}
 
 \item{max_iter}{maximum number of block-coordinate cycles when fitting the factorized prior.}
 

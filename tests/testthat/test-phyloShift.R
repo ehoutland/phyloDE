@@ -79,6 +79,12 @@ test_that("phyloMash shift probabilities count shifts above min_fold", {
   expect_true(all(pm2$branch_prob[1:5, "sp3"] > 0.9))                              # shift of 4 (log2) on sp3
   expect_lt(max(factorized_posterior(pm1$data, pm1$fit, min_shift = 10)$branch_prob), 1e-3)
   expect_error(phyloMash(Y, tree, col_species = species, min_fold = 0.8), "min_fold")
+  ## re-scoring without refitting gives the fit at that threshold
+  pm3 <- rescoreShifts(pm1, 1.25)
+  expect_equal(pm3$branch_prob, pm2$branch_prob); expect_equal(pm3$shift_prob, pm2$shift_prob)
+  expect_equal(pm3$top_branch, pm2$top_branch); expect_equal(pm3$min_fold, 1.25)
+  expect_equal(rescoreShifts(pm3, 1)$branch_prob, pm1$branch_prob)
+  expect_error(rescoreShifts(pm1, 0.5), "min_fold")
   ## the normal posterior of the shift size given a component matches direct conditioning
   f <- pm1$fit; d <- pm1$data
   ci <- which(f$comp$b > 0 & f$pi > 1e-6)[1]; a <- f$dirs[[f$comp$b[ci]]]; v <- f$v_grid[f$comp$v[ci]]

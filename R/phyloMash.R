@@ -76,7 +76,8 @@
 #' @param min_fold factorized prior: the smallest fold change counted as a shift
 #' (default 1.25): \code{branch_prob} is the posterior probability of a shift of
 #' more than \code{log2(min_fold)} in absolute value on the log2 scale; \code{1}
-#' counts any non-zero shift. It does not change the fitted prior.
+#' counts any non-zero shift. It does not change the fitted prior: see
+#' \code{\link{rescoreShifts}} to change it without refitting.
 #' @param max_iter maximum number of block-coordinate cycles when fitting the factorized prior.
 #' @param n_grid number of drift scales (factorized prior) or of scales of the mash grid.
 #' @param drift_prior pseudo-observations explained by the no-shift patterns only
@@ -136,7 +137,7 @@ phyloMash <- function(object, phy, col_species = NULL, model = c("BM", "OUfixedR
   patterns <- match.arg(patterns)
   prior <- if (patterns == "canonical") "mash" else match.arg(prior)
   if (!ape::is.ultrametric(phy)) stop("The tree must be ultrametric.")
-  if (!is.numeric(min_fold) || length(min_fold) != 1 || !is.finite(min_fold) || min_fold < 1) stop("`min_fold` must be a single fold change of at least 1.")
+  check_min_fold(min_fold)
   if (inherits(object, "SpeciesStats")) {
     stats <- object
   } else {
@@ -419,7 +420,7 @@ fit_factorized_prior <- function(data, shapes, noise_shape, dirs, s_grid, n_grid
 ## Posterior shift probabilities and posterior mean contrasts for all genes, in chunks. With min_shift > 0 (log2 scale),
 ## the probability of a shift on branch b counts each shift component with the posterior probability that the shift
 ## exceeds min_shift in absolute value: given the component, the shift size is normal (see shift_quadforms).
-factorized_posterior <- function(data, fit, min_shift = 0, chunk = NULL) {
+factorized_posterior <- function(data, fit, min_shift = 0, chunk = NULL, means = TRUE) {
   G <- nrow(data$Bhat); nb <- max(fit$comp$b)
   use <- which(fit$pi > 1e-12); U <- fit$U[use]; pi <- fit$pi[use]; cm <- fit$comp[use, , drop = FALSE]
   cell <- (use - 1L) %% fit$K3 + 1L          # base cell (drift shape, scale, noise) = index of its no-shift component
@@ -444,9 +445,45 @@ factorized_posterior <- function(data, fit, min_shift = 0, chunk = NULL) {
     } else {
       bp[idx, ] <- vapply(seq_len(nb), function(b) rowSums(w[, cm$b == b, drop = FALSE]), numeric(length(idx)))
     }
-    pm[idx, ] <- mashr:::compute_posterior_matrices(dc, U, w)$PosteriorMean
+    if (means) pm[idx, ] <- mashr:::compute_posterior_matrices(dc, U, w)$PosteriorMean
   }
-  list(branch_prob = bp, pm = pm)
+  list(branch_prob = bp, pm = if (means) pm else NULL)
+}
+
+check_min_fold <- function(min_fold) {
+  if (!is.numeric(min_fold) || length(min_fold) != 1 || !is.finite(min_fold) || min_fold < 1) stop("`min_fold` must be a single fold change of at least 1.")
+}
+
+#' @title Shift probabilities at another minimum fold change
+#'
+#' @description
+#' Recompute the shift probabilities of a \code{\link{phyloMash}} fit (factorized
+#' prior) for another minimum fold change, without refitting the prior: the
+#' threshold only enters the posterior. The result is identical to calling
+#' \code{phyloMash} again with this \code{min_fold}.
+#'
+#' @param object a \code{PhyloMash} object fitted with \code{prior = "factorized"}.
+#' @param min_fold the smallest fold change counted as a shift: the branch
+#' probabilities become posterior probabilities of a shift of more than
+#' \code{log2(min_fold)} in absolute value (log2 scale); \code{1} counts any non-zero shift.
+#'
+#' @return \code{object} with \code{branch_prob}, \code{shift_prob}, \code{top_branch}
+#' and \code{min_fold} updated (the posterior means do not depend on the threshold).
+#'
+#' @seealso \code{\link{phyloMash}}, \code{\link{callShifts}}
+#'
+#' @export
+#'
+rescoreShifts <- function(object, min_fold) {
+  if (!inherits(object, "PhyloMash") || is.null(object$fit)) stop("`object` must be a phyloMash fit with the factorized prior.")
+  check_min_fold(min_fold)
+  bp <- factorized_posterior(object$data, object$fit, min_shift = log2(min_fold), means = FALSE)$branch_prob
+  dimnames(bp) <- dimnames(object$branch_prob)
+  object$branch_prob <- bp
+  object$shift_prob <- rowSums(bp)
+  object$top_branch <- colnames(bp)[max.col(bp, ties.method = "first")]
+  object$min_fold <- min_fold
+  object
 }
 
 ## Shift size given a shift component: the contrasts are x ~ N(0, Q + v a a') with Q = diag(Shat) V diag(Shat) + B
