@@ -12,7 +12,8 @@ phyloMash(
   prior = c("factorized", "mash"),
   rho_prime_grid = c(0.1, 0.5),
   shift_sd = c(0.25, 5),
-  n_shift = 12,
+  n_shift = 8,
+  noise_levels = c(0.1, 0.25, 0.5, 1, 2, 4),
   shared_shift_rate = TRUE,
   max_iter = 1500,
   shift_ratios = c(1, 4, 16, 64),
@@ -52,6 +53,10 @@ drift patterns (the BM drift pattern is always included).}
 
 \item{n_shift}{number of shift sizes of the factorized prior (log-spaced over \code{shift_sd}).}
 
+\item{noise_levels}{factorized prior: variances of the non-phylogenetic species-level
+noise, in multiples of the median squared standard error of the contrasts (the
+level 0 is always included).}
+
 \item{shared_shift_rate}{factorized prior: one shift rate for all branches (the
 default; the rate is then estimated mostly from the branches where shifts and
 drift are distinguishable, the short ones) or one rate per branch (more
@@ -65,10 +70,10 @@ of the shift patterns.}
 
 \item{min_shift_ratio}{shift patterns with a ratio below this value count as "no shift".}
 
-\item{noise_ratios}{ratios of the species-specific non-phylogenetic variance
+\item{noise_ratios}{mash prior: ratios of the species-specific non-phylogenetic variance
 to the drift variance of the drift-plus-noise patterns.}
 
-\item{identity}{if \code{TRUE} (the default), add a pure species-specific variance pattern.}
+\item{identity}{mash prior: if \code{TRUE} (the default), add a pure species-specific variance pattern.}
 
 \item{trend}{if \code{TRUE} (the default), the moderation of the within-species
 variances allows for a mean-variance trend (\code{\link[limma]{squeezeVar}} with \code{covariate}).}
@@ -110,7 +115,7 @@ An object of class \code{PhyloMash}, a list with
 \describe{
 \item{mash}{the \code{mash} fit (\code{prior = "mash"}).}
 \item{prior_fit}{the estimated factors (\code{prior = "factorized"}): shift rate(s),
-shift-size distribution, drift-scale distribution, drift-shape weights.}
+shift-size distribution, drift-scale distribution, drift-shape weights, noise distribution.}
 \item{branch_prob}{genes by testable branches matrix of posterior probabilities of a shift.}
 \item{shift_prob}{posterior probability of a shift on any branch.}
 \item{top_branch}{the branch with the highest posterior probability.}
@@ -133,10 +138,11 @@ from all genes. Two priors are available:
 \item \code{prior = "factorized"} (the default): the prior weight of a
 component is a product of independent factors, \eqn{u(d)\, q(s)\, [1 - \epsilon]}
 without shift and \eqn{u(d)\, q(s)\, \epsilon_b\, h(v)} with a shift of
-variance \eqn{v} on branch \eqn{b}, where \eqn{s} is the drift variance (per
-unit tree height), \eqn{d} the drift shape (BM, OU for the values of
-\code{rho_prime_grid}, BM plus species-specific non-phylogenetic noise for the
-values of \code{noise_ratios}, pure noise if \code{identity}), \eqn{h} a
+variance \eqn{v} on branch \eqn{b}, times \eqn{r(n)} for every component, where
+\eqn{s} is the drift variance (per unit tree height), \eqn{d} the drift shape
+(BM, or OU for the values of \code{rho_prime_grid}), \eqn{n} the variance of an
+independent non-phylogenetic species-level noise (\code{noise_levels} times the
+median squared standard error: outlier libraries, unmodelled batch), \eqn{h} a
 distribution of shift sizes shared by all branches and \eqn{\epsilon_b} the
 shift rate of branch \eqn{b} (one rate for all branches if
 \code{shared_shift_rate}). The factors are estimated by EM. Because the

@@ -12,10 +12,11 @@
 #' \item \code{prior = "factorized"} (the default): the prior weight of a
 #' component is a product of independent factors, \eqn{u(d)\, q(s)\, [1 - \epsilon]}
 #' without shift and \eqn{u(d)\, q(s)\, \epsilon_b\, h(v)} with a shift of
-#' variance \eqn{v} on branch \eqn{b}, where \eqn{s} is the drift variance (per
-#' unit tree height), \eqn{d} the drift shape (BM, OU for the values of
-#' \code{rho_prime_grid}, BM plus species-specific non-phylogenetic noise for the
-#' values of \code{noise_ratios}, pure noise if \code{identity}), \eqn{h} a
+#' variance \eqn{v} on branch \eqn{b}, times \eqn{r(n)} for every component, where
+#' \eqn{s} is the drift variance (per unit tree height), \eqn{d} the drift shape
+#' (BM, or OU for the values of \code{rho_prime_grid}), \eqn{n} the variance of an
+#' independent non-phylogenetic species-level noise (\code{noise_levels} times the
+#' median squared standard error: outlier libraries, unmodelled batch), \eqn{h} a
 #' distribution of shift sizes shared by all branches and \eqn{\epsilon_b} the
 #' shift rate of branch \eqn{b} (one rate for all branches if
 #' \code{shared_shift_rate}). The factors are estimated by EM. Because the
@@ -50,14 +51,17 @@
 #' @param shift_ratios ratios of the shift variance to the drift variance (at the tips)
 #' of the shift patterns.
 #' @param min_shift_ratio shift patterns with a ratio below this value count as "no shift".
-#' @param noise_ratios ratios of the species-specific non-phylogenetic variance
+#' @param noise_ratios mash prior: ratios of the species-specific non-phylogenetic variance
 #' to the drift variance of the drift-plus-noise patterns.
-#' @param identity if \code{TRUE} (the default), add a pure species-specific variance pattern.
+#' @param identity mash prior: if \code{TRUE} (the default), add a pure species-specific variance pattern.
 #' @param trend if \code{TRUE} (the default), the moderation of the within-species
 #' variances allows for a mean-variance trend (\code{\link[limma]{squeezeVar}} with \code{covariate}).
 #' @param prior \code{"factorized"} (the default) or \code{"mash"}, see Description.
 #' @param shift_sd range of the shift standard deviations (log2 scale) of the factorized prior.
 #' @param n_shift number of shift sizes of the factorized prior (log-spaced over \code{shift_sd}).
+#' @param noise_levels factorized prior: variances of the non-phylogenetic species-level
+#' noise, in multiples of the median squared standard error of the contrasts (the
+#' level 0 is always included).
 #' @param shared_shift_rate factorized prior: one shift rate for all branches (the
 #' default; the rate is then estimated mostly from the branches where shifts and
 #' drift are distinguishable, the short ones) or one rate per branch (more
@@ -93,7 +97,7 @@
 #' \describe{
 #' \item{mash}{the \code{mash} fit (\code{prior = "mash"}).}
 #' \item{prior_fit}{the estimated factors (\code{prior = "factorized"}): shift rate(s),
-#' shift-size distribution, drift-scale distribution, drift-shape weights.}
+#' shift-size distribution, drift-scale distribution, drift-shape weights, noise distribution.}
 #' \item{branch_prob}{genes by testable branches matrix of posterior probabilities of a shift.}
 #' \item{shift_prob}{posterior probability of a shift on any branch.}
 #' \item{top_branch}{the branch with the highest posterior probability.}
@@ -109,7 +113,8 @@
 #' @export
 #'
 phyloMash <- function(object, phy, col_species = NULL, model = c("BM", "OUfixedRoot"), prior = c("factorized", "mash"),
-                      rho_prime_grid = c(0.1, 0.5), shift_sd = c(0.25, 5), n_shift = 12, shared_shift_rate = TRUE, max_iter = 1500,
+                      rho_prime_grid = c(0.1, 0.5), shift_sd = c(0.25, 5), n_shift = 8, noise_levels = c(0.1, 0.25, 0.5, 1, 2, 4),
+                      shared_shift_rate = TRUE, max_iter = 1500,
                       shift_ratios = c(1, 4, 16, 64), min_shift_ratio = 4,
                       noise_ratios = c(0.25, 1, 4), identity = TRUE, trend = TRUE, n_grid = 15, drift_prior = 0.02,
                       fit_subset = NULL, covariates = NULL, patterns = c("tree", "canonical"), ...) {
@@ -156,17 +161,16 @@ phyloMash <- function(object, phy, col_species = NULL, model = c("BM", "OUfixedR
     for (rp in rho_prime_grid) drift_vcv[[paste0("OU", rp)]] <- ape::vcv(rescale_tree(phylolm::transf.branch.lengths(tr_u, "OUfixedRoot", parameters = list(alpha = rho_prime_inv(rp, 1, ab)))$tree))
   }
   if (prior == "factorized") {
-    ## drift shapes: BM (and OU) drift, BM drift plus species-specific (non-phylogenetic) noise, pure noise; they share the
-    ## drift-scale distribution. Without the noise shapes, species-level variance not covered by the standard errors (outlier
-    ## libraries, unmodelled batch) can only be absorbed by shifts, and the fitted shift rate goes to one.
-    sh <- c(drift_vcv, setNames(lapply(noise_ratios, function(r) drift_vcv$BM + r * diag(S)), paste0("BM_noise", noise_ratios)))
-    if (identity) sh$identity <- diag(S)
-    shapes <- lapply(sh, function(Cd) { x <- L %*% Cd %*% t(L); (x + t(x)) / 2 })
+    ## drift shapes (BM, OU), an independent non-phylogenetic noise factor (iid species-level variance, e.g. from
+    ## outlier libraries or unmodelled batch, on its own grid), and the shift factor
+    shapes <- lapply(drift_vcv, function(Cd) { x <- L %*% Cd %*% t(L); (x + t(x)) / 2 })
+    noise_shape <- L %*% t(L)
     dirs <- lapply(seq_along(labels), function(b) as.vector(L %*% Zs[, b]))
     ## drift variance per unit tree height: from a hundredth of the smallest standard error to four times the largest squared deviation
     s_hi <- 4 * stats::quantile(rowMeans(Bhat^2), 0.999) / mean(diag(shapes$BM)); s_lo <- (min(Shat) / 10)^2 / mean(diag(shapes$BM))
     s_grid <- c(0, exp(seq(log(s_lo), log(s_hi), length.out = n_grid)))
     v_grid <- exp(seq(log(shift_sd[1]^2), log(shift_sd[2]^2), length.out = n_shift))
+    n_grid_noise <- c(0, noise_levels * stats::median(data$Shat^2))
     data_fit <- data
     n_fit <- if (is.null(fit_subset)) min(G, 5000) else min(G, fit_subset)
     if (n_fit < G) {
@@ -174,7 +178,7 @@ phyloMash <- function(object, phy, col_species = NULL, model = c("BM", "OUfixedR
       data_fit <- mashr::mash_set_data(data$Bhat[sub, , drop = FALSE], data$Shat[sub, , drop = FALSE], V = data$V)
     }
     if (n_fit < 1000) warning("The factorized prior is fitted on ", n_fit, " genes only: its shift rate may be poorly estimated (it has more components than genes).")
-    fit <- fit_factorized_prior(data_fit, shapes, dirs, s_grid, v_grid, shared = shared_shift_rate, max_iter = max_iter)
+    fit <- fit_factorized_prior(data_fit, shapes, noise_shape, dirs, s_grid, n_grid_noise, v_grid, shared = shared_shift_rate, max_iter = max_iter)
     post <- factorized_posterior(data, fit)
     branch_prob <- post$branch_prob; dimnames(branch_prob) <- list(stats$genes, labels)
     pm_species <- cbind(post$pm, -rowSums(post$pm)); colnames(pm_species) <- species
@@ -185,6 +189,7 @@ phyloMash <- function(object, phy, col_species = NULL, model = c("BM", "OUfixedR
                 pattern_weights = e,
                 prior_fit = list(shift_rate = e, shift_size = data.frame(sd = sqrt(v_grid), weight = fit$h),
                                  drift_scale = data.frame(variance = s_grid, weight = fit$q), drift_shape = setNames(fit$u, names(shapes)),
+                                 noise = data.frame(variance = n_grid_noise, weight = fit$r),
                                  loglik = fit$loglik, iterations = fit$iter),
                 branches = branches, L = L, df = df, data = data, prior = prior,
                 model = model, patterns = patterns, phy = phy, stats_method = stats$method, genes = stats$genes)
@@ -347,25 +352,25 @@ branch_prob_from_weights <- function(w, tag, labels) {
 ## Factorized prior: component = (drift shape d, drift scale s) x {no shift, shift on branch b with variance v};
 ## pi = u[d] q[s] (e0 | e[b] h[v]). Maximum likelihood by EM (product-form mixture: each factor is the marginal of the
 ## responsibilities), accelerated by SQUAREM (Varadhan & Roland 2008), with a fallback to plain EM steps.
-fit_factorized_prior <- function(data, shapes, dirs, s_grid, v_grid, shared = TRUE, max_iter = 1500, tol = 1e-10) {
-  nd <- length(shapes); ns <- length(s_grid); nb <- length(dirs); nv <- length(v_grid)
-  comp <- expand.grid(d = seq_len(nd), s = seq_len(ns), j = 0:(nb * nv))
+fit_factorized_prior <- function(data, shapes, noise_shape, dirs, s_grid, n_grid, v_grid, shared = TRUE, max_iter = 1500, tol = 1e-10) {
+  nd <- length(shapes); ns <- length(s_grid); nn <- length(n_grid); nb <- length(dirs); nv <- length(v_grid)
+  comp <- expand.grid(d = seq_len(nd), s = seq_len(ns), n = seq_len(nn), j = 0:(nb * nv))
   comp$b <- ifelse(comp$j == 0, 0L, (comp$j - 1L) %/% nv + 1L); comp$v <- ifelse(comp$j == 0, 0L, (comp$j - 1L) %% nv + 1L)
-  U <- lapply(seq_len(nrow(comp)), function(i) { x <- s_grid[comp$s[i]] * shapes[[comp$d[i]]]
+  U <- lapply(seq_len(nrow(comp)), function(i) { x <- s_grid[comp$s[i]] * shapes[[comp$d[i]]] + n_grid[comp$n[i]] * noise_shape
     if (comp$b[i] > 0) x <- x + v_grid[comp$v[i]] * tcrossprod(dirs[[comp$b[i]]]); (x + t(x)) / 2 })
   lik <- exp(mashr:::calc_relative_lik_matrix(data, U)$loglik_matrix); G <- nrow(lik)
-  blocks <- c(rep("u", nd), rep("q", ns), rep("e", nb + 1), rep("h", nv))
-  unpack <- function(th) list(u = th[blocks == "u"], q = th[blocks == "q"], e = th[blocks == "e"], h = th[blocks == "h"])
-  pi_of <- function(p) p$u[comp$d] * p$q[comp$s] * p$e[comp$b + 1L] * ifelse(comp$b == 0, 1, p$h[pmax(comp$v, 1L)])
+  blocks <- c(rep("u", nd), rep("q", ns), rep("r", nn), rep("e", nb + 1), rep("h", nv))
+  unpack <- function(th) list(u = th[blocks == "u"], q = th[blocks == "q"], r = th[blocks == "r"], e = th[blocks == "e"], h = th[blocks == "h"])
+  pi_of <- function(p) p$u[comp$d] * p$q[comp$s] * p$r[comp$n] * p$e[comp$b + 1L] * ifelse(comp$b == 0, 1, p$h[pmax(comp$v, 1L)])
   loglik <- function(th) sum(log(as.vector(lik %*% pi_of(unpack(th)))))
   em <- function(th) {
     p <- unpack(th); pic <- pi_of(p); f <- as.vector(lik %*% pic)
     cs <- pic * as.vector(crossprod(lik, 1 / f)) / G
-    u <- as.vector(tapply(cs, comp$d, sum)); q <- as.vector(tapply(cs, comp$s, sum))
+    u <- as.vector(tapply(cs, comp$d, sum)); q <- as.vector(tapply(cs, comp$s, sum)); r <- as.vector(tapply(cs, comp$n, sum))
     e <- as.vector(tapply(cs, comp$b, sum)); if (shared) e <- c(e[1], rep(sum(e[-1]) / nb, nb))
     h <- as.vector(tapply(cs[comp$b > 0], comp$v[comp$b > 0], sum)); h <- h / sum(h)
-    c(u, q, e, h) }
-  th <- c(rep(1 / nd, nd), rep(1 / ns, ns), c(0.9, rep(0.1 / nb, nb)), rep(1 / nv, nv))
+    c(u, q, r, e, h) }
+  th <- c(rep(1 / nd, nd), rep(1 / ns, ns), rep(1 / nn, nn), c(0.9, rep(0.1 / nb, nb)), rep(1 / nv, nv))
   ## SQUAREM on the log scale (weights stay positive), each block renormalized; weights floored to keep the logs finite
   lg <- function(x) log(pmax(x, 1e-300))
   renorm <- function(x) { for (bk in unique(blocks)) x[blocks == bk] <- x[blocks == bk] / sum(x[blocks == bk]); x }
@@ -385,7 +390,7 @@ fit_factorized_prior <- function(data, shapes, dirs, s_grid, v_grid, shared = TR
     if (converged) break
   }
   p <- unpack(th)
-  list(comp = comp, U = U, pi = pi_of(p), u = p$u, q = p$q, e = p$e, h = p$h, loglik = ll, iter = n_em)
+  list(comp = comp, U = U, pi = pi_of(p), u = p$u, q = p$q, r = p$r, e = p$e, h = p$h, loglik = ll, iter = n_em)
 }
 
 ## Posterior shift probabilities and posterior mean contrasts for all genes, in chunks
