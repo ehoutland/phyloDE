@@ -19,7 +19,8 @@
 #' median squared standard error: outlier libraries, unmodelled batch), \eqn{h} a
 #' distribution of shift sizes shared by all branches and \eqn{\epsilon_b} the
 #' shift rate of branch \eqn{b} (one rate for all branches if
-#' \code{shared_shift_rate}). The factors are estimated by EM. Because the
+#' \code{shared_shift_rate}). The factors are estimated by maximum likelihood
+#' (block-coordinate ascent). Because the
 #' distribution of drift scales is the same for shifted and unshifted genes,
 #' shifts cannot stand in for large drift (or the reverse), which, with few
 #' species, the free weights of the mash prior allow at almost no cost in
@@ -67,7 +68,7 @@
 #' drift are distinguishable, the short ones) or one rate per branch (more
 #' flexible when shifts concentrate on some branches, slightly anti-conservative
 #' in the package simulations).
-#' @param max_iter maximum number of EM iterations of the factorized prior.
+#' @param max_iter maximum number of block-coordinate cycles when fitting the factorized prior.
 #' @param n_grid number of drift scales (factorized prior) or of scales of the mash grid.
 #' @param drift_prior pseudo-observations explained by the no-shift patterns only
 #' (null, drift, drift plus noise, identity, and shift patterns below
@@ -114,7 +115,7 @@
 #'
 phyloMash <- function(object, phy, col_species = NULL, model = c("BM", "OUfixedRoot"), prior = c("factorized", "mash"),
                       rho_prime_grid = c(0.1, 0.5), shift_sd = c(0.25, 5), n_shift = 8, noise_levels = c(0.1, 0.25, 0.5, 1, 2, 4),
-                      shared_shift_rate = TRUE, max_iter = 1500,
+                      shared_shift_rate = TRUE, max_iter = 500,
                       shift_ratios = c(1, 4, 16, 64), min_shift_ratio = 4,
                       noise_ratios = c(0.25, 1, 4), identity = TRUE, trend = TRUE, n_grid = 15, drift_prior = 0.02,
                       fit_subset = NULL, covariates = NULL, patterns = c("tree", "canonical"), ...) {
@@ -349,48 +350,51 @@ branch_prob_from_weights <- function(w, tag, labels) {
   bp
 }
 
-## Factorized prior: component = (drift shape d, drift scale s) x {no shift, shift on branch b with variance v};
-## pi = u[d] q[s] (e0 | e[b] h[v]). Maximum likelihood by EM (product-form mixture: each factor is the marginal of the
-## responsibilities), accelerated by SQUAREM (Varadhan & Roland 2008), with a fallback to plain EM steps.
-fit_factorized_prior <- function(data, shapes, noise_shape, dirs, s_grid, n_grid, v_grid, shared = TRUE, max_iter = 1500, tol = 1e-10) {
+## Factorized prior: component = (drift shape d, drift scale s, noise level n) x {no shift, shift on branch b with variance v};
+## pi = u[d] q[s] r[n] (e0 | e[b] h[v]). Maximum likelihood by block-coordinate ascent over two blocks, each solved on an
+## aggregated likelihood matrix so that a cycle costs two passes over the G x C matrix:
+##   (u, q, r) given (e, h): T = likelihoods summed over the shift states (G x nd*ns*nn), EM on the product form;
+##   (e, h) given (u, q, r): P = likelihoods summed over the drift/noise cells (G x shift states); with a shared shift rate,
+##   (no shift, shift of size v on a uniformly chosen branch) is a free mixture solved exactly by mixsqp, otherwise EM.
+fit_factorized_prior <- function(data, shapes, noise_shape, dirs, s_grid, n_grid, v_grid, shared = TRUE, max_iter = 500, inner = 100, tol = 1e-7) {
   nd <- length(shapes); ns <- length(s_grid); nn <- length(n_grid); nb <- length(dirs); nv <- length(v_grid)
   comp <- expand.grid(d = seq_len(nd), s = seq_len(ns), n = seq_len(nn), j = 0:(nb * nv))
   comp$b <- ifelse(comp$j == 0, 0L, (comp$j - 1L) %/% nv + 1L); comp$v <- ifelse(comp$j == 0, 0L, (comp$j - 1L) %% nv + 1L)
   U <- lapply(seq_len(nrow(comp)), function(i) { x <- s_grid[comp$s[i]] * shapes[[comp$d[i]]] + n_grid[comp$n[i]] * noise_shape
     if (comp$b[i] > 0) x <- x + v_grid[comp$v[i]] * tcrossprod(dirs[[comp$b[i]]]); (x + t(x)) / 2 })
   lik <- exp(mashr:::calc_relative_lik_matrix(data, U)$loglik_matrix); G <- nrow(lik)
-  blocks <- c(rep("u", nd), rep("q", ns), rep("r", nn), rep("e", nb + 1), rep("h", nv))
-  unpack <- function(th) list(u = th[blocks == "u"], q = th[blocks == "q"], r = th[blocks == "r"], e = th[blocks == "e"], h = th[blocks == "h"])
-  pi_of <- function(p) p$u[comp$d] * p$q[comp$s] * p$r[comp$n] * p$e[comp$b + 1L] * ifelse(comp$b == 0, 1, p$h[pmax(comp$v, 1L)])
-  loglik <- function(th) sum(log(as.vector(lik %*% pi_of(unpack(th)))))
-  em <- function(th) {
-    p <- unpack(th); pic <- pi_of(p); f <- as.vector(lik %*% pic)
-    cs <- pic * as.vector(crossprod(lik, 1 / f)) / G
-    u <- as.vector(tapply(cs, comp$d, sum)); q <- as.vector(tapply(cs, comp$s, sum)); r <- as.vector(tapply(cs, comp$n, sum))
-    e <- as.vector(tapply(cs, comp$b, sum)); if (shared) e <- c(e[1], rep(sum(e[-1]) / nb, nb))
-    h <- as.vector(tapply(cs[comp$b > 0], comp$v[comp$b > 0], sum)); h <- h / sum(h)
-    c(u, q, r, e, h) }
-  th <- c(rep(1 / nd, nd), rep(1 / ns, ns), rep(1 / nn, nn), c(0.9, rep(0.1 / nb, nb)), rep(1 / nv, nv))
-  ## SQUAREM on the log scale (weights stay positive), each block renormalized; weights floored to keep the logs finite
-  lg <- function(x) log(pmax(x, 1e-300))
-  renorm <- function(x) { for (bk in unique(blocks)) x[blocks == bk] <- x[blocks == bk] / sum(x[blocks == bk]); x }
-  ll <- loglik(th); n_em <- 0
-  while (n_em < max_iter) {
-    th1 <- em(th); th2 <- em(th1); n_em <- n_em + 2
-    r <- lg(th1) - lg(th); v <- lg(th2) - lg(th1) - r
-    ll2 <- loglik(th2)
-    if (sum(v^2) < 1e-30) { th_new <- th2; ll_new <- ll2 } else {
-      alpha <- min(-1, -sqrt(sum(r^2) / sum(v^2)))
-      thp <- renorm(exp(pmin(lg(th) - 2 * alpha * r + alpha^2 * v, 700)))
-      thp <- em(thp); n_em <- n_em + 1; ll_p <- loglik(thp)
-      if (is.finite(ll_p) && ll_p >= ll2) { th_new <- thp; ll_new <- ll_p } else { th_new <- th2; ll_new <- ll2 }
+  K3 <- nd * ns * nn; J <- 1 + nb * nv
+  dim(lik) <- c(G * K3, J)   # column j holds the G x K3 likelihoods of shift state j (expand.grid order: d, s, n, then j)
+  wj <- function(e, h) c(e[1], as.vector(outer(h, e[-1])))
+  avg_b <- kronecker(rep(1 / nb, nb), diag(nv))
+  u <- rep(1 / nd, nd); q <- rep(1 / ns, ns); r <- rep(1 / nn, nn); e <- c(0.9, rep(0.1 / nb, nb)); h <- rep(1 / nv, nv)
+  ll <- -Inf
+  for (cyc in seq_len(max_iter)) {
+    Tm <- matrix(lik %*% wj(e, h), G, K3)
+    for (it in seq_len(inner)) {
+      x <- as.vector(outer(outer(u, q), r)); cs <- x * as.vector(crossprod(Tm, 1 / as.vector(Tm %*% x))) / G
+      u1 <- rowSums(matrix(cs, nd)); q1 <- rowSums(matrix(colSums(matrix(cs, nd)), ns)); r1 <- colSums(matrix(cs, nd * ns))
+      dif <- max(abs(u1 - u), abs(q1 - q), abs(r1 - r)); u <- u1; q <- q1; r <- r1
+      if (dif < 1e-9) break
     }
-    converged <- abs(ll_new - ll) < tol * abs(ll) && max(abs(th_new - th)) < 1e-6
-    th <- th_new; ll <- ll_new
+    x <- as.vector(outer(outer(u, q), r))
+    P <- vapply(seq_len(J), function(j) as.vector(matrix(lik[, j], G, K3) %*% x), numeric(G))
+    if (shared) {
+      g <- mixsqp::mixsqp(cbind(P[, 1], P[, -1, drop = FALSE] %*% avg_b), x0 = c(e[1], (1 - e[1]) * h), control = list(verbose = FALSE))$x
+      g <- pmax(g, 0); g <- g / sum(g)
+      e <- c(g[1], rep((1 - g[1]) / nb, nb)); if (sum(g[-1]) > 0) h <- g[-1] / sum(g[-1])
+    } else for (it in seq_len(inner)) {
+      w <- wj(e, h); cs <- w * as.vector(crossprod(P, 1 / as.vector(P %*% w))) / G
+      csm <- matrix(cs[-1], nv, nb); e1 <- c(cs[1], colSums(csm)); h1 <- rowSums(csm) / sum(csm)
+      dif <- max(abs(e1 - e), abs(h1 - h)); e <- e1; h <- h1
+      if (dif < 1e-9) break
+    }
+    ll_new <- sum(log(as.vector(P %*% wj(e, h))))
+    converged <- ll_new - ll < tol * abs(ll_new); ll <- ll_new
     if (converged) break
   }
-  p <- unpack(th)
-  list(comp = comp, U = U, pi = pi_of(p), u = p$u, q = p$q, r = p$r, e = p$e, h = p$h, loglik = ll, iter = n_em)
+  pi <- u[comp$d] * q[comp$s] * r[comp$n] * wj(e, h)[comp$j + 1L]
+  list(comp = comp, U = U, pi = pi, u = u, q = q, r = r, e = e, h = h, loglik = ll, iter = cyc)
 }
 
 ## Posterior shift probabilities and posterior mean contrasts for all genes, in chunks

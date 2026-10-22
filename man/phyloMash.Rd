@@ -15,7 +15,7 @@ phyloMash(
   n_shift = 8,
   noise_levels = c(0.1, 0.25, 0.5, 1, 2, 4),
   shared_shift_rate = TRUE,
-  max_iter = 1500,
+  max_iter = 500,
   shift_ratios = c(1, 4, 16, 64),
   min_shift_ratio = 4,
   noise_ratios = c(0.25, 1, 4),
@@ -63,7 +63,7 @@ drift are distinguishable, the short ones) or one rate per branch (more
 flexible when shifts concentrate on some branches, slightly anti-conservative
 in the package simulations).}
 
-\item{max_iter}{maximum number of EM iterations of the factorized prior.}
+\item{max_iter}{maximum number of block-coordinate cycles when fitting the factorized prior.}
 
 \item{shift_ratios}{ratios of the shift variance to the drift variance (at the tips)
 of the shift patterns.}
@@ -145,7 +145,8 @@ independent non-phylogenetic species-level noise (\code{noise_levels} times the
 median squared standard error: outlier libraries, unmodelled batch), \eqn{h} a
 distribution of shift sizes shared by all branches and \eqn{\epsilon_b} the
 shift rate of branch \eqn{b} (one rate for all branches if
-\code{shared_shift_rate}). The factors are estimated by EM. Because the
+\code{shared_shift_rate}). The factors are estimated by maximum likelihood
+(block-coordinate ascent). Because the
 distribution of drift scales is the same for shifted and unshifted genes,
 shifts cannot stand in for large drift (or the reverse), which, with few
 species, the free weights of the mash prior allow at almost no cost in

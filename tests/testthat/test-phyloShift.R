@@ -52,7 +52,7 @@ test_that("phyloShiftFit recovers a clean shift and matches phylolmFit", {
 })
 
 test_that("phyloMash recovers a clean shift with calibrated probabilities", {
-  pm <- phyloMash(Y, tree, col_species = species, model = "BM", n_grid = 8)
+  expect_warning(pm <- phyloMash(Y, tree, col_species = species, model = "BM", n_grid = 8), "fitted on")
   expect_s3_class(pm, "PhyloMash")
   expect_equal(dim(pm$branch_prob), c(G, 2 * S - 3))
   expect_true(all(pm$branch_prob[1:5, "sp3"] > 0.9))
@@ -63,6 +63,8 @@ test_that("phyloMash recovers a clean shift with calibrated probabilities", {
   expect_true(sum(calls[6:G, ]) <= 3)
   expect_equal(sum(pm$pattern_weights), 1, tolerance = 1e-6)
   ## OU drift patterns and subset fitting run
-  pm2 <- phyloMash(Y, tree, col_species = species, model = "OUfixedRoot", n_grid = 6, fit_subset = 40)
-  expect_true(any(grepl("drift_OU", names(pm2$pattern_weights))))
+  expect_warning(pm2 <- phyloMash(Y, tree, col_species = species, model = "OUfixedRoot", n_grid = 6, fit_subset = 40), "fitted on")
+  expect_true(any(grepl("^OU", names(pm2$prior_fit$drift_shape))))
+  pm3 <- phyloMash(Y, tree, col_species = species, model = "OUfixedRoot", prior = "mash", n_grid = 6, fit_subset = 40)
+  expect_true(any(grepl("drift_OU", names(pm3$pattern_weights))))
 })
