@@ -191,11 +191,7 @@ phyloMash <- function(object, phy, col_species = NULL, model = c("BM", "OUfixedR
   m <- mashr::mash(data, g = g, fixg = TRUE, outputlevel = 2, verbose = FALSE)
 
   ## posterior probabilities of the shift patterns
-  w <- m$posterior_weights
-  base <- sub("\\.[0-9]+$", "", colnames(w))
-  tag_w <- tag[base]; tag_w[base == "null"] <- "none"
-  branch_prob <- sapply(labels, function(b) rowSums(w[, which(tag_w == b), drop = FALSE]))
-  if (is.null(dim(branch_prob))) branch_prob <- matrix(branch_prob, nrow = G)
+  branch_prob <- branch_prob_from_weights(m$posterior_weights, tag, labels)
   dimnames(branch_prob) <- list(stats$genes, labels)
   pi <- m$fitted_g$pi
   pattern_weights <- tapply(pi, sub("\\.[0-9]+$", "", names(pi)), sum)
@@ -206,6 +202,7 @@ phyloMash <- function(object, phy, col_species = NULL, model = c("BM", "OUfixedR
               top_branch = labels[max.col(branch_prob, ties.method = "first")],
               pm_species = pm_species, species_means = M, se_species = SE, dropout = stats$dropout[, ord, drop = FALSE],
               pattern_weights = pattern_weights, branches = branches, L = L, df = df, drift_prior = drift_prior,
+              data = data, tag = tag,
               model = model, patterns = patterns, phy = phy, stats_method = stats$method, genes = stats$genes)
   class(res) <- "PhyloMash"
   return(res)
@@ -272,15 +269,25 @@ fit_mash_weights <- function(data, Ulist, grid, no_shift = "null", pseudo = 0, n
 #'
 callShifts <- function(object, level = 0.05, by = c("pair", "gene")) {
   by <- match.arg(by)
-  prob <- if (by == "pair") object$branch_prob else object$shift_prob
-  p <- as.vector(prob)
-  o <- order(-p)
-  cum <- cumsum(1 - p[o]) / seq_along(o)
-  k <- suppressWarnings(max(which(cum <= level)))
-  sel <- rep(FALSE, length(p))
-  if (is.finite(k)) sel[o[seq_len(k)]] <- TRUE
-  if (by == "pair") {
-    sel <- matrix(sel, nrow(prob), dimnames = dimnames(prob))
-  } else names(sel) <- names(prob)
+  prob <- if (by == "pair") object$branch_prob else pmin(object$shift_prob, 1)
+  sel <- bfdr_select(as.vector(prob), level)
+  if (by == "pair") sel <- matrix(sel, nrow(prob), dimnames = dimnames(prob)) else names(sel) <- names(prob)
   sel
+}
+
+## Bayesian FDR selection: largest set of top scores whose average (1 - p) is <= level
+bfdr_select <- function(p, level) {
+  o <- order(-p); cum <- cumsum(1 - p[o]) / seq_along(o)
+  k <- suppressWarnings(max(which(cum <= level)))
+  sel <- rep(FALSE, length(p)); if (is.finite(k)) sel[o[seq_len(k)]] <- TRUE
+  sel
+}
+
+## Shift probabilities per branch from mash posterior weights (columns named by component)
+branch_prob_from_weights <- function(w, tag, labels) {
+  base <- sub("\\.[0-9]+$", "", colnames(w))
+  tag_w <- tag[base]; tag_w[base == "null"] <- "none"
+  bp <- sapply(labels, function(b) rowSums(w[, which(tag_w == b), drop = FALSE]))
+  if (is.null(dim(bp))) bp <- matrix(bp, nrow = nrow(w))
+  bp
 }
