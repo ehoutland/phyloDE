@@ -362,7 +362,13 @@ fit_factorized_prior <- function(data, shapes, noise_shape, dirs, s_grid, n_grid
   comp$b <- ifelse(comp$j == 0, 0L, (comp$j - 1L) %/% nv + 1L); comp$v <- ifelse(comp$j == 0, 0L, (comp$j - 1L) %% nv + 1L)
   U <- lapply(seq_len(nrow(comp)), function(i) { x <- s_grid[comp$s[i]] * shapes[[comp$d[i]]] + n_grid[comp$n[i]] * noise_shape
     if (comp$b[i] > 0) x <- x + v_grid[comp$v[i]] * tcrossprod(dirs[[comp$b[i]]]); (x + t(x)) / 2 })
-  lik <- exp(mashr:::calc_relative_lik_matrix(data, U)$loglik_matrix); G <- nrow(lik)
+  ## relative likelihoods (row-wise), computed in chunks of genes into one preallocated matrix to bound memory
+  G <- nrow(data$Bhat); lik <- matrix(0, G, length(U)); ch <- max(1, floor(2.5e7 / length(U)))
+  for (st in seq(1, G, by = ch)) {
+    idx <- st:min(G, st + ch - 1)
+    dc <- mashr::mash_set_data(data$Bhat[idx, , drop = FALSE], data$Shat[idx, , drop = FALSE], V = data$V)
+    lik[idx, ] <- exp(mashr:::calc_relative_lik_matrix(dc, U)$loglik_matrix)
+  }
   K3 <- nd * ns * nn; J <- 1 + nb * nv
   dim(lik) <- c(G * K3, J)   # column j holds the G x K3 likelihoods of shift state j (expand.grid order: d, s, n, then j)
   wj <- function(e, h) c(e[1], as.vector(outer(h, e[-1])))
