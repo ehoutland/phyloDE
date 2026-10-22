@@ -92,13 +92,15 @@
 #'
 #' @export
 #'
-phyloMash <- function(object, phy, col_species = NULL, model = c("BM", "OUfixedRoot"),
-                      rho_prime_grid = c(0.1, 0.5), shift_ratios = c(1, 4, 16, 64), min_shift_ratio = 4,
+phyloMash <- function(object, phy, col_species = NULL, model = c("BM", "OUfixedRoot"), prior = c("factorized", "mash"),
+                      rho_prime_grid = c(0.1, 0.5), shift_sd = c(0.25, 5), n_shift = 12, shared_shift_rate = TRUE, max_iter = 1500,
+                      shift_ratios = c(1, 4, 16, 64), min_shift_ratio = 4,
                       noise_ratios = c(0.25, 1, 4), identity = TRUE, trend = TRUE, n_grid = 15, drift_prior = 0.02,
                       fit_subset = NULL, covariates = NULL, patterns = c("tree", "canonical"), ...) {
   if (!requireNamespace("mashr", quietly = TRUE)) stop("Package 'mashr' is needed for function 'phyloMash'.")
   model <- match.arg(model)
   patterns <- match.arg(patterns)
+  prior <- if (patterns == "canonical") "mash" else match.arg(prior)
   if (!ape::is.ultrametric(phy)) stop("The tree must be ultrametric.")
   if (inherits(object, "SpeciesStats")) {
     stats <- object
@@ -132,17 +134,44 @@ phyloMash <- function(object, phy, col_species = NULL, model = c("BM", "OUfixedR
   branches <- bi$branches[keep, ]
   labels <- branches$label
   tr_u <- rescale_tree(phy)
+  drift_vcv <- list(BM = ape::vcv(tr_u))
+  if (model == "OUfixedRoot") {
+    ab <- getBoundsSelectionStrength(tr_u)
+    for (rp in rho_prime_grid) drift_vcv[[paste0("OU", rp)]] <- ape::vcv(rescale_tree(phylolm::transf.branch.lengths(tr_u, "OUfixedRoot", parameters = list(alpha = rho_prime_inv(rp, 1, ab)))$tree))
+  }
+  if (prior == "factorized") {
+    shapes <- lapply(drift_vcv, function(Cd) { x <- L %*% Cd %*% t(L); (x + t(x)) / 2 })
+    dirs <- lapply(seq_along(labels), function(b) as.vector(L %*% Zs[, b]))
+    ## drift variance per unit tree height: from a hundredth of the smallest standard error to four times the largest squared deviation
+    s_hi <- 4 * stats::quantile(rowMeans(Bhat^2), 0.999) / mean(diag(shapes$BM)); s_lo <- (min(Shat) / 10)^2 / mean(diag(shapes$BM))
+    s_grid <- c(0, exp(seq(log(s_lo), log(s_hi), length.out = n_grid)))
+    v_grid <- exp(seq(log(shift_sd[1]^2), log(shift_sd[2]^2), length.out = n_shift))
+    data_fit <- data
+    if (!is.null(fit_subset) && fit_subset < G) {
+      sub <- sort(sample.int(G, fit_subset))
+      data_fit <- mashr::mash_set_data(data$Bhat[sub, , drop = FALSE], data$Shat[sub, , drop = FALSE], V = data$V)
+    }
+    fit <- fit_factorized_prior(data_fit, shapes, dirs, s_grid, v_grid, shared = shared_shift_rate, max_iter = max_iter)
+    post <- factorized_posterior(data, fit)
+    branch_prob <- post$branch_prob; dimnames(branch_prob) <- list(stats$genes, labels)
+    pm_species <- cbind(post$pm, -rowSums(post$pm)); colnames(pm_species) <- species
+    e <- fit$e; names(e) <- c("no_shift", labels)
+    res <- list(branch_prob = branch_prob, shift_prob = rowSums(branch_prob),
+                top_branch = labels[max.col(branch_prob, ties.method = "first")],
+                pm_species = pm_species, species_means = M, se_species = SE, dropout = stats$dropout[, ord, drop = FALSE],
+                pattern_weights = e,
+                prior_fit = list(shift_rate = e, shift_size = data.frame(sd = sqrt(v_grid), weight = fit$h),
+                                 drift_scale = data.frame(variance = s_grid, weight = fit$q), drift_shape = setNames(fit$u, names(shapes)),
+                                 loglik = fit$loglik, iterations = fit$iter),
+                branches = branches, L = L, df = df, data = data, prior = prior,
+                model = model, patterns = patterns, phy = phy, stats_method = stats$method, genes = stats$genes)
+    class(res) <- "PhyloMash"
+    return(res)
+  }
   toc <- function(U) { Uc <- L %*% U %*% t(L); Uc <- (Uc + t(Uc)) / 2; Uc / max(diag(Uc)) }
   Ulist <- list(); tag <- character()
   if (patterns == "tree") {
-    drifts <- list(BM = ape::vcv(tr_u))
-    if (model == "OUfixedRoot") {
-      ab <- getBoundsSelectionStrength(tr_u)
-      for (rp in rho_prime_grid) {
-        al <- rho_prime_inv(rp, 1, ab)
-        drifts[[paste0("OU", rp)]] <- ape::vcv(rescale_tree(phylolm::transf.branch.lengths(tr_u, "OUfixedRoot", parameters = list(alpha = al))$tree))
-      }
-    }
+    drifts <- drift_vcv
     for (dn in names(drifts)) {
       Ulist[[paste0("drift_", dn)]] <- toc(drifts[[dn]]); tag[paste0("drift_", dn)] <- "none"
       for (q in noise_ratios) {
@@ -202,7 +231,7 @@ phyloMash <- function(object, phy, col_species = NULL, model = c("BM", "OUfixedR
               top_branch = labels[max.col(branch_prob, ties.method = "first")],
               pm_species = pm_species, species_means = M, se_species = SE, dropout = stats$dropout[, ord, drop = FALSE],
               pattern_weights = pattern_weights, branches = branches, L = L, df = df, drift_prior = drift_prior,
-              data = data, tag = tag,
+              data = data, tag = tag, prior = prior,
               model = model, patterns = patterns, phy = phy, stats_method = stats$method, genes = stats$genes)
   class(res) <- "PhyloMash"
   return(res)
@@ -290,4 +319,45 @@ branch_prob_from_weights <- function(w, tag, labels) {
   bp <- sapply(labels, function(b) rowSums(w[, which(tag_w == b), drop = FALSE]))
   if (is.null(dim(bp))) bp <- matrix(bp, nrow = nrow(w))
   bp
+}
+
+## Factorized prior: component = (drift shape d, drift scale s) x {no shift, shift on branch b with variance v};
+## pi = u[d] q[s] (e0 | e[b] h[v]). Fitted by EM (product-form mixture: each factor is the marginal of the responsibilities).
+fit_factorized_prior <- function(data, shapes, dirs, s_grid, v_grid, shared = TRUE, max_iter = 1500, tol = 1e-9) {
+  nd <- length(shapes); ns <- length(s_grid); nb <- length(dirs); nv <- length(v_grid)
+  comp <- expand.grid(d = seq_len(nd), s = seq_len(ns), j = 0:(nb * nv))
+  comp$b <- ifelse(comp$j == 0, 0L, (comp$j - 1L) %/% nv + 1L); comp$v <- ifelse(comp$j == 0, 0L, (comp$j - 1L) %% nv + 1L)
+  U <- lapply(seq_len(nrow(comp)), function(i) { x <- s_grid[comp$s[i]] * shapes[[comp$d[i]]]
+    if (comp$b[i] > 0) x <- x + v_grid[comp$v[i]] * tcrossprod(dirs[[comp$b[i]]]); (x + t(x)) / 2 })
+  lik <- exp(mashr:::calc_relative_lik_matrix(data, U)$loglik_matrix); tl <- t(lik)
+  u <- rep(1 / nd, nd); q <- rep(1 / ns, ns); e <- c(0.9, rep(0.1 / nb, nb)); h <- rep(1 / nv, nv)
+  pi_of <- function() u[comp$d] * q[comp$s] * e[comp$b + 1L] * ifelse(comp$b == 0, 1, h[pmax(comp$v, 1L)])
+  ll_old <- -Inf
+  for (it in seq_len(max_iter)) {
+    pic <- pi_of(); f <- as.vector(lik %*% pic); ll <- sum(log(f))
+    cs <- pic * as.vector(tl %*% (1 / f)) / nrow(lik)    # mean responsibilities per component
+    u <- as.vector(tapply(cs, comp$d, sum)); q <- as.vector(tapply(cs, comp$s, sum))
+    e <- as.vector(tapply(cs, comp$b, sum)); if (shared) e <- c(e[1], rep(sum(e[-1]) / nb, nb))
+    h <- as.vector(tapply(cs[comp$b > 0], comp$v[comp$b > 0], sum)); h <- h / sum(h)
+    if (ll - ll_old < tol * abs(ll)) break
+    ll_old <- ll
+  }
+  list(comp = comp, U = U, pi = pi_of(), u = u, q = q, e = e, h = h, loglik = ll, iter = it)
+}
+
+## Posterior shift probabilities and posterior mean contrasts for all genes, in chunks
+factorized_posterior <- function(data, fit, chunk = NULL) {
+  G <- nrow(data$Bhat); nb <- max(fit$comp$b)
+  use <- which(fit$pi > 1e-12); U <- fit$U[use]; pi <- fit$pi[use]; bcomp <- fit$comp$b[use]
+  if (is.null(chunk)) chunk <- max(200, floor(5e6 / length(use)))
+  bp <- matrix(0, G, nb); pm <- matrix(0, G, ncol(data$Bhat))
+  for (st in seq(1, G, by = chunk)) {
+    idx <- st:min(G, st + chunk - 1)
+    dc <- mashr::mash_set_data(data$Bhat[idx, , drop = FALSE], data$Shat[idx, , drop = FALSE], V = data$V)
+    lik <- exp(mashr:::calc_relative_lik_matrix(dc, U)$loglik_matrix)
+    w <- sweep(lik, 2, pi, "*"); w <- w / rowSums(w)
+    bp[idx, ] <- sapply(seq_len(nb), function(b) rowSums(w[, bcomp == b, drop = FALSE]))
+    pm[idx, ] <- mashr:::compute_posterior_matrices(dc, U, w)$PosteriorMean
+  }
+  list(branch_prob = bp, pm = pm)
 }
