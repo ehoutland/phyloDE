@@ -366,15 +366,18 @@ fit_factorized_prior <- function(data, shapes, dirs, s_grid, v_grid, shared = TR
     h <- as.vector(tapply(cs[comp$b > 0], comp$v[comp$b > 0], sum)); h <- h / sum(h)
     c(u, q, e, h) }
   th <- c(rep(1 / nd, nd), rep(1 / ns, ns), c(0.9, rep(0.1 / nb, nb)), rep(1 / nv, nv))
+  ## SQUAREM on the log scale (weights stay positive), each block renormalized; weights floored to keep the logs finite
+  lg <- function(x) log(pmax(x, 1e-300))
+  renorm <- function(x) { for (bk in unique(blocks)) x[blocks == bk] <- x[blocks == bk] / sum(x[blocks == bk]); x }
   ll <- loglik(th); n_em <- 0
   while (n_em < max_iter) {
     th1 <- em(th); th2 <- em(th1); n_em <- n_em + 2
-    r <- th1 - th; v <- th2 - th1 - r
-    if (sum(v^2) < 1e-30) { th_new <- th2; ll_new <- loglik(th2) } else {
+    r <- lg(th1) - lg(th); v <- lg(th2) - lg(th1) - r
+    ll2 <- loglik(th2)
+    if (sum(v^2) < 1e-30) { th_new <- th2; ll_new <- ll2 } else {
       alpha <- min(-1, -sqrt(sum(r^2) / sum(v^2)))
-      thp <- th - 2 * alpha * r + alpha^2 * v
-      if (all(thp > 0)) { thp <- em(thp); n_em <- n_em + 1; ll_p <- loglik(thp) } else ll_p <- -Inf
-      ll2 <- loglik(th2)
+      thp <- renorm(exp(pmin(lg(th) - 2 * alpha * r + alpha^2 * v, 700)))
+      thp <- em(thp); n_em <- n_em + 1; ll_p <- loglik(thp)
       if (is.finite(ll_p) && ll_p >= ll2) { th_new <- thp; ll_new <- ll_p } else { th_new <- th2; ll_new <- ll2 }
     }
     converged <- abs(ll_new - ll) < tol * abs(ll) && max(abs(th_new - th)) < 1e-6
