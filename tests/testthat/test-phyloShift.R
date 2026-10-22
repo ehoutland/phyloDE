@@ -68,3 +68,24 @@ test_that("phyloMash recovers a clean shift with calibrated probabilities", {
   pm3 <- phyloMash(Y, tree, col_species = species, model = "OUfixedRoot", prior = "mash", n_grid = 6, fit_subset = 40)
   expect_true(any(grepl("drift_OU", names(pm3$pattern_weights))))
 })
+
+test_that("phyloMash shift probabilities count shifts above min_fold", {
+  expect_warning(pm1 <- phyloMash(Y, tree, col_species = species, model = "BM", n_grid = 8, min_fold = 1), "fitted on")
+  expect_warning(pm2 <- phyloMash(Y, tree, col_species = species, model = "BM", n_grid = 8, min_fold = 1.25), "fitted on")
+  ## the threshold changes the probabilities, not the fitted prior
+  expect_equal(pm1$fit$pi, pm2$fit$pi)
+  expect_equal(factorized_posterior(pm1$data, pm1$fit, min_shift = log2(1.25))$branch_prob, unname(pm2$branch_prob))
+  expect_true(all(pm2$branch_prob <= pm1$branch_prob + 1e-12))
+  expect_true(all(pm2$branch_prob[1:5, "sp3"] > 0.9))                              # shift of 4 (log2) on sp3
+  expect_lt(max(factorized_posterior(pm1$data, pm1$fit, min_shift = 10)$branch_prob), 1e-3)
+  expect_error(phyloMash(Y, tree, col_species = species, min_fold = 0.8), "min_fold")
+  ## the normal posterior of the shift size given a component matches direct conditioning
+  f <- pm1$fit; d <- pm1$data
+  ci <- which(f$comp$b > 0 & f$pi > 1e-6)[1]; a <- f$dirs[[f$comp$b[ci]]]; v <- f$v_grid[f$comp$v[ci]]
+  qf <- shift_quadforms(d$Bhat, d$Shat, d$V, f$U[[(ci - 1) %% f$K3 + 1]], cbind(a))
+  for (g in c(1, 7, 30)) {
+    Sig <- diag(d$Shat[g, ]) %*% d$V %*% diag(d$Shat[g, ]) + f$U[[ci]]
+    expect_equal(v * qf$r[g, 1] / (1 + v * qf$p[g, 1]), drop(v * t(a) %*% solve(Sig, d$Bhat[g, ])), tolerance = 1e-8)
+    expect_equal(v / (1 + v * qf$p[g, 1]), drop(v - v^2 * t(a) %*% solve(Sig, a)), tolerance = 1e-8)
+  }
+})

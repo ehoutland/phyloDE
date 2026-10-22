@@ -15,6 +15,7 @@ phyloMash(
   n_shift = 8,
   noise_levels = c(0.1, 0.25, 0.5, 1, 2, 4),
   shared_shift_rate = TRUE,
+  min_fold = 1.25,
   max_iter = 500,
   shift_ratios = c(1, 4, 16, 64),
   min_shift_ratio = 4,
@@ -62,6 +63,11 @@ default; the rate is then estimated mostly from the branches where shifts and
 drift are distinguishable, the short ones) or one rate per branch (more
 flexible when shifts concentrate on some branches, slightly anti-conservative
 in the package simulations).}
+
+\item{min_fold}{factorized prior: the smallest fold change counted as a shift
+(default 1.25): \code{branch_prob} is the posterior probability of a shift of
+more than \code{log2(min_fold)} in absolute value on the log2 scale; \code{1}
+counts any non-zero shift. It does not change the fitted prior.}
 
 \item{max_iter}{maximum number of block-coordinate cycles when fitting the factorized prior.}
 
@@ -116,8 +122,11 @@ An object of class \code{PhyloMash}, a list with
 \item{mash}{the \code{mash} fit (\code{prior = "mash"}).}
 \item{prior_fit}{the estimated factors (\code{prior = "factorized"}): shift rate(s),
 shift-size distribution, drift-scale distribution, drift-shape weights, noise distribution.}
-\item{branch_prob}{genes by testable branches matrix of posterior probabilities of a shift.}
+\item{branch_prob}{genes by testable branches matrix of posterior probabilities of a shift
+(of more than \code{min_fold}, factorized prior).}
 \item{shift_prob}{posterior probability of a shift on any branch.}
+\item{min_fold, fit}{factorized prior: the fold-change threshold of the shift probabilities and the
+fitted mixture (components, covariances, weights).}
 \item{top_branch}{the branch with the highest posterior probability.}
 \item{pm_species}{genes by species matrix of posterior mean deviations from the across-species mean.}
 \item{species_means, se_species}{the species means and their (moderated) standard errors.}
@@ -153,6 +162,11 @@ species, the free weights of the mash prior allow at almost no cost in
 likelihood; the Bayesian false discovery rate of \code{\link{callShifts}} is
 then close to its nominal level, and as powerful as an oracle that knows the
 population distributions of drift and shifts (package simulations with 4 and 7 species).
+A shift counts only if it is larger than \code{min_fold}: the branch
+probabilities are posterior probabilities that the branch carries a shift
+of more than \code{log2(min_fold)} in absolute value. The prior keeps
+near-zero shifts, which are indistinguishable from no shift (and can stand in
+for unmodelled species-level noise), but they are not counted as shifts.
 \item \code{prior = "mash"}: a \code{\link[mashr]{mash}} mixture of scaled
 covariance patterns, each pattern and scale with its own weight: "drift"
 patterns (BM, OU, drift plus noise, identity) and "shift" patterns (BM drift

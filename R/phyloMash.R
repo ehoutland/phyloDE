@@ -27,6 +27,11 @@
 #' likelihood; the Bayesian false discovery rate of \code{\link{callShifts}} is
 #' then close to its nominal level, and as powerful as an oracle that knows the
 #' population distributions of drift and shifts (package simulations with 4 and 7 species).
+#' A shift counts only if it is larger than \code{min_fold}: the branch
+#' probabilities are posterior probabilities that the branch carries a shift
+#' of more than \code{log2(min_fold)} in absolute value. The prior keeps
+#' near-zero shifts, which are indistinguishable from no shift (and can stand in
+#' for unmodelled species-level noise), but they are not counted as shifts.
 #' \item \code{prior = "mash"}: a \code{\link[mashr]{mash}} mixture of scaled
 #' covariance patterns, each pattern and scale with its own weight: "drift"
 #' patterns (BM, OU, drift plus noise, identity) and "shift" patterns (BM drift
@@ -68,6 +73,10 @@
 #' drift are distinguishable, the short ones) or one rate per branch (more
 #' flexible when shifts concentrate on some branches, slightly anti-conservative
 #' in the package simulations).
+#' @param min_fold factorized prior: the smallest fold change counted as a shift
+#' (default 1.25): \code{branch_prob} is the posterior probability of a shift of
+#' more than \code{log2(min_fold)} in absolute value on the log2 scale; \code{1}
+#' counts any non-zero shift. It does not change the fitted prior.
 #' @param max_iter maximum number of block-coordinate cycles when fitting the factorized prior.
 #' @param n_grid number of drift scales (factorized prior) or of scales of the mash grid.
 #' @param drift_prior pseudo-observations explained by the no-shift patterns only
@@ -99,8 +108,11 @@
 #' \item{mash}{the \code{mash} fit (\code{prior = "mash"}).}
 #' \item{prior_fit}{the estimated factors (\code{prior = "factorized"}): shift rate(s),
 #' shift-size distribution, drift-scale distribution, drift-shape weights, noise distribution.}
-#' \item{branch_prob}{genes by testable branches matrix of posterior probabilities of a shift.}
+#' \item{branch_prob}{genes by testable branches matrix of posterior probabilities of a shift
+#' (of more than \code{min_fold}, factorized prior).}
 #' \item{shift_prob}{posterior probability of a shift on any branch.}
+#' \item{min_fold, fit}{factorized prior: the fold-change threshold of the shift probabilities and the
+#' fitted mixture (components, covariances, weights).}
 #' \item{top_branch}{the branch with the highest posterior probability.}
 #' \item{pm_species}{genes by species matrix of posterior mean deviations from the across-species mean.}
 #' \item{species_means, se_species}{the species means and their (moderated) standard errors.}
@@ -115,7 +127,7 @@
 #'
 phyloMash <- function(object, phy, col_species = NULL, model = c("BM", "OUfixedRoot"), prior = c("factorized", "mash"),
                       rho_prime_grid = c(0.1, 0.5), shift_sd = c(0.25, 5), n_shift = 8, noise_levels = c(0.1, 0.25, 0.5, 1, 2, 4),
-                      shared_shift_rate = TRUE, max_iter = 500,
+                      shared_shift_rate = TRUE, min_fold = 1.25, max_iter = 500,
                       shift_ratios = c(1, 4, 16, 64), min_shift_ratio = 4,
                       noise_ratios = c(0.25, 1, 4), identity = TRUE, trend = TRUE, n_grid = 15, drift_prior = 0.02,
                       fit_subset = NULL, covariates = NULL, patterns = c("tree", "canonical"), ...) {
@@ -124,6 +136,7 @@ phyloMash <- function(object, phy, col_species = NULL, model = c("BM", "OUfixedR
   patterns <- match.arg(patterns)
   prior <- if (patterns == "canonical") "mash" else match.arg(prior)
   if (!ape::is.ultrametric(phy)) stop("The tree must be ultrametric.")
+  if (!is.numeric(min_fold) || length(min_fold) != 1 || !is.finite(min_fold) || min_fold < 1) stop("`min_fold` must be a single fold change of at least 1.")
   if (inherits(object, "SpeciesStats")) {
     stats <- object
   } else {
@@ -180,7 +193,7 @@ phyloMash <- function(object, phy, col_species = NULL, model = c("BM", "OUfixedR
     }
     if (n_fit < 1000) warning("The factorized prior is fitted on ", n_fit, " genes only: its shift rate may be poorly estimated (it has more components than genes).")
     fit <- fit_factorized_prior(data_fit, shapes, noise_shape, dirs, s_grid, n_grid_noise, v_grid, shared = shared_shift_rate, max_iter = max_iter)
-    post <- factorized_posterior(data, fit)
+    post <- factorized_posterior(data, fit, min_shift = log2(min_fold))
     branch_prob <- post$branch_prob; dimnames(branch_prob) <- list(stats$genes, labels)
     pm_species <- cbind(post$pm, -rowSums(post$pm)); colnames(pm_species) <- species
     e <- fit$e; names(e) <- c("no_shift", labels)
@@ -192,7 +205,7 @@ phyloMash <- function(object, phy, col_species = NULL, model = c("BM", "OUfixedR
                                  drift_scale = data.frame(variance = s_grid, weight = fit$q), drift_shape = setNames(fit$u, names(shapes)),
                                  noise = data.frame(variance = n_grid_noise, weight = fit$r),
                                  loglik = fit$loglik, iterations = fit$iter),
-                branches = branches, L = L, df = df, data = data, prior = prior,
+                branches = branches, L = L, df = df, data = data, prior = prior, min_fold = min_fold, fit = fit,
                 model = model, patterns = patterns, phy = phy, stats_method = stats$method, genes = stats$genes)
     class(res) <- "PhyloMash"
     return(res)
@@ -400,13 +413,17 @@ fit_factorized_prior <- function(data, shapes, noise_shape, dirs, s_grid, n_grid
     if (converged) break
   }
   pi <- u[comp$d] * q[comp$s] * r[comp$n] * wj(e, h)[comp$j + 1L]
-  list(comp = comp, U = U, pi = pi, u = u, q = q, r = r, e = e, h = h, loglik = ll, iter = cyc)
+  list(comp = comp, U = U, pi = pi, u = u, q = q, r = r, e = e, h = h, loglik = ll, iter = cyc, K3 = K3, dirs = dirs, v_grid = v_grid)
 }
 
-## Posterior shift probabilities and posterior mean contrasts for all genes, in chunks
-factorized_posterior <- function(data, fit, chunk = NULL) {
+## Posterior shift probabilities and posterior mean contrasts for all genes, in chunks. With min_shift > 0 (log2 scale),
+## the probability of a shift on branch b counts each shift component with the posterior probability that the shift
+## exceeds min_shift in absolute value: given the component, the shift size is normal (see shift_quadforms).
+factorized_posterior <- function(data, fit, min_shift = 0, chunk = NULL) {
   G <- nrow(data$Bhat); nb <- max(fit$comp$b)
-  use <- which(fit$pi > 1e-12); U <- fit$U[use]; pi <- fit$pi[use]; bcomp <- fit$comp$b[use]
+  use <- which(fit$pi > 1e-12); U <- fit$U[use]; pi <- fit$pi[use]; cm <- fit$comp[use, , drop = FALSE]
+  cell <- (use - 1L) %% fit$K3 + 1L          # base cell (drift shape, scale, noise) = index of its no-shift component
+  shc <- which(cm$b > 0)
   if (is.null(chunk)) chunk <- max(200, floor(5e6 / length(use)))
   bp <- matrix(0, G, nb); pm <- matrix(0, G, ncol(data$Bhat))
   for (st in seq(1, G, by = chunk)) {
@@ -414,8 +431,65 @@ factorized_posterior <- function(data, fit, chunk = NULL) {
     dc <- mashr::mash_set_data(data$Bhat[idx, , drop = FALSE], data$Shat[idx, , drop = FALSE], V = data$V)
     lik <- exp(mashr:::calc_relative_lik_matrix(dc, U)$loglik_matrix)
     w <- sweep(lik, 2, pi, "*"); w <- w / rowSums(w)
-    bp[idx, ] <- sapply(seq_len(nb), function(b) rowSums(w[, bcomp == b, drop = FALSE]))
+    if (min_shift > 0) {
+      for (k in unique(cell[shc])) {
+        ck <- shc[cell[shc] == k]; bs <- sort(unique(cm$b[ck]))
+        qf <- shift_quadforms(data$Bhat[idx, , drop = FALSE], data$Shat[idx, , drop = FALSE], data$V, fit$U[[k]], do.call(cbind, fit$dirs[bs]))
+        for (ci in ck) {
+          j <- match(cm$b[ci], bs); v <- fit$v_grid[cm$v[ci]]
+          den <- 1 + v * qf$p[, j]; m <- v * qf$r[, j] / den; sd <- sqrt(v / den)
+          bp[idx, cm$b[ci]] <- bp[idx, cm$b[ci]] + w[, ci] * (stats::pnorm(-(min_shift + m) / sd) + stats::pnorm((m - min_shift) / sd))
+        }
+      }
+    } else {
+      bp[idx, ] <- vapply(seq_len(nb), function(b) rowSums(w[, cm$b == b, drop = FALSE]), numeric(length(idx)))
+    }
     pm[idx, ] <- mashr:::compute_posterior_matrices(dc, U, w)$PosteriorMean
   }
   list(branch_prob = bp, pm = pm)
+}
+
+## Shift size given a shift component: the contrasts are x ~ N(0, Q + v a a') with Q = diag(Shat) V diag(Shat) + B
+## (sampling error plus the base covariance B of drift and noise) and a the shift direction, so that
+## delta | x ~ N(v r / (1 + v p), v / (1 + v p)) with p = a'Q^-1 a and r = a'Q^-1 x (Sherman-Morrison).
+## Returns p and r for every gene (rows of Bhat) and direction (columns of A), with batched Cholesky factors.
+shift_quadforms <- function(Bhat, Shat, V, B, A) {
+  n <- nrow(Bhat); R <- ncol(Bhat)
+  Q <- array(0, c(n, R, R))
+  for (i in seq_len(R)) for (j in seq_len(i)) Q[, i, j] <- Q[, j, i] <- Shat[, i] * Shat[, j] * V[i, j] + B[i, j]
+  Lc <- batch_chol(Q)
+  yx <- batch_forward(Lc, Bhat)
+  p <- r <- matrix(0, n, ncol(A))
+  for (k in seq_len(ncol(A))) {
+    ya <- batch_forward(Lc, matrix(A[, k], n, R, byrow = TRUE))
+    p[, k] <- rowSums(ya^2); r[, k] <- rowSums(ya * yx)
+  }
+  list(p = p, r = r)
+}
+
+## Lower Cholesky factors of n symmetric positive definite R x R matrices (n x R x R array), vectorized over the n matrices
+batch_chol <- function(Q) {
+  R <- dim(Q)[2]; Lc <- array(0, dim(Q))
+  for (j in seq_len(R)) {
+    s <- Q[, j, j]
+    for (k in seq_len(j - 1)) s <- s - Lc[, j, k]^2
+    Lc[, j, j] <- sqrt(s)
+    for (i in seq_len(R - j) + j) {
+      s <- Q[, i, j]
+      for (k in seq_len(j - 1)) s <- s - Lc[, i, k] * Lc[, j, k]
+      Lc[, i, j] <- s / Lc[, j, j]
+    }
+  }
+  Lc
+}
+
+## Forward substitution Lc y = b for n triangular systems (b: n x R)
+batch_forward <- function(Lc, b) {
+  y <- b
+  for (i in seq_len(ncol(b))) {
+    s <- b[, i]
+    for (k in seq_len(i - 1)) s <- s - Lc[, i, k] * y[, k]
+    y[, i] <- s / Lc[, i, i]
+  }
+  y
 }
