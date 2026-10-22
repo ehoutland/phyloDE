@@ -27,8 +27,15 @@
 #' (column). If \code{NULL}, parsed from the column names (see \code{\link{phylolmFit}}).
 #' @param method \code{"limma"} (the default) or \code{"edgeR"}, see Description.
 #' @param covariates an optional samples by covariates matrix of sample-level
-#' covariates (no intercept) to be regressed out. With \code{"limma"}, the
-#' covariates are projected out of the data before taking the species means.
+#' covariates (no intercept), e.g. batch indicators. They enter the model with
+#' the species (centred), so the species estimates are adjusted to the same
+#' covariate values for every species: the effect of a batch that crosses
+#' species unevenly is removed from the species contrasts, its size being
+#' estimated from the species sampled in several batches. The standard errors
+#' include the uncertainty of the covariate effects (the correlation it induces
+#' between the estimates of different species is not reported). A covariate
+#' that is constant within every species is confounded with species and is
+#' rejected.
 #' @param trend for \code{"limma"}, whether the variance moderation allows for a
 #' mean-variance trend (default \code{TRUE}).
 #' @param legacy for \code{"edgeR"}, passed to \code{\link[edgeR]{glmQLFit}};
@@ -84,8 +91,9 @@ speciesStats <- function(object, col_species = NULL, method = c("limma", "edgeR"
   if (!is.null(covariates)) {
     covariates <- as.matrix(covariates)
     if (nrow(covariates) != n) stop("`covariates` must have one row per sample.")
-    ## covariates orthogonalized to the species space: the species coefficients stay species means
-    X <- cbind(X, qr.resid(qr(X), covariates))
+    if (is.null(colnames(covariates))) colnames(covariates) <- paste0("covariate", seq_len(ncol(covariates)))
+    X <- cbind(X, scale(covariates, center = TRUE, scale = FALSE))
+    if (qr(X)$rank < ncol(X)) stop("The covariates are confounded with species (or collinear): their effects cannot be separated from species differences.")
   }
   if (!is.null(sample_weights) && (length(sample_weights) != n || any(sample_weights <= 0))) stop("`sample_weights` must be one positive weight per sample.")
 
@@ -108,17 +116,34 @@ speciesStats <- function(object, col_species = NULL, method = c("limma", "edgeR"
     fit <- edgeR::glmQLFit(y, X, legacy = legacy, prior.count = prior_count, ...)
     G <- nrow(counts)
     beta <- fit$coefficients[, seq_len(S), drop = FALSE]
-    ## NB Fisher information per species (diagonal: species are disjoint blocks, up to the covariates,
-    ## whose effect on the species blocks is ignored), evaluated at the means implied by the reported
-    ## (prior-count shrunk) coefficients: for a species without any read, the fitted mean is 0 and the
-    ## information would vanish, while the coefficient itself is finite only because of the prior count.
+    ## NB Fisher information, evaluated at the means implied by the reported (prior-count shrunk)
+    ## coefficients: for a species without any read, the fitted mean is 0 and the information would
+    ## vanish, while the coefficient itself is finite only because of the prior count. Species are
+    ## disjoint blocks (diagonal information a); with covariates, the variance of a species coefficient is
+    ## the diagonal of the species block of the inverse information, 1/a + c' E^{-1} c (Woodbury), with
+    ## c = B / a the covariate profile of the species and E = D - B' A^{-1} B.
     mu <- exp(fit$coefficients %*% t(X) + as.matrix(fit$offset))
     phi <- fit$dispersion
     if (length(phi) == 1) phi <- rep(phi, G)
     wq <- if (is.null(sample_weights)) 1 else rep(sample_weights, each = G)
-    info <- (wq * mu / (1 + phi * mu)) %*% X[, seq_len(S), drop = FALSE]
+    W <- wq * mu / (1 + phi * mu)
+    Xs <- X[, seq_len(S), drop = FALSE]
+    a <- W %*% Xs
+    v_unit <- 1 / a
+    if (ncol(X) > S) {
+      Zc <- X[, -seq_len(S), drop = FALSE]; K <- ncol(Zc)
+      Cn <- lapply(seq_len(K), function(k) (W %*% (Xs * Zc[, k])) / a)                     # G x S each
+      E <- array(0, c(G, K, K))
+      for (k in seq_len(K)) for (l in seq_len(k)) {
+        E[, k, l] <- E[, l, k] <- as.vector(W %*% (Zc[, k] * Zc[, l])) - rowSums(a * Cn[[k]] * Cn[[l]])
+      }
+      v_unit <- v_unit + if (K == 1) Cn[[1]]^2 / E[, 1, 1] else t(vapply(seq_len(G), function(g) {
+        cg <- vapply(Cn, function(cm) cm[g, ], numeric(S))
+        rowSums((cg %*% solve(E[g, , ])) * cg)
+      }, numeric(S)))
+    }
     var_post <- if (!is.null(fit$var.post)) fit$var.post else fit$s2.post
-    se <- sqrt(var_post / info)
+    se <- sqrt(var_post * v_unit)
     M <- beta / log(2); se <- se / log(2)
     df_res <- if (!is.null(fit$df.residual.adj)) fit$df.residual.adj else fit$df.residual
     df <- df_res + fit$df.prior

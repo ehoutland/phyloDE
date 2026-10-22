@@ -28,8 +28,15 @@ factors and, if relevant, offsets).}
 \item{method}{\code{"limma"} (the default) or \code{"edgeR"}, see Description.}
 
 \item{covariates}{an optional samples by covariates matrix of sample-level
-covariates (no intercept) to be regressed out. With \code{"limma"}, the
-covariates are projected out of the data before taking the species means.}
+covariates (no intercept), e.g. batch indicators. They enter the model with
+the species (centred), so the species estimates are adjusted to the same
+covariate values for every species: the effect of a batch that crosses
+species unevenly is removed from the species contrasts, its size being
+estimated from the species sampled in several batches. The standard errors
+include the uncertainty of the covariate effects (the correlation it induces
+between the estimates of different species is not reported). A covariate
+that is constant within every species is confounded with species and is
+rejected.}
 
 \item{sample_weights}{an optional vector of sample quality weights (one per
 sample, e.g. from \code{\link{sampleQualityWeights}}): the variance of a

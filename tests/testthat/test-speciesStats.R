@@ -31,6 +31,34 @@ test_that("speciesStats limma and edgeR agree and flag dropouts", {
   expect_equal(slc$mean, sl$mean, tolerance = 1e-10)
 })
 
+test_that("speciesStats removes a batch that crosses species unevenly", {
+  ## sp1 entirely in batch 2, sp5 entirely in batch 1, the others mixed; batch 2 has 4x the reads of a gene-specific
+  batch <- as.numeric(ave(seq_along(species), species, FUN = function(i) seq_along(i) %% 2 == 0))
+  batch[species == "sp1"] <- 1; batch[species == "sp5"] <- 0
+  b_eff <- rnorm(G, 0, 1)
+  counts_b <- matrix(rnbinom(G * n, mu = exp(mu + outer(b_eff, batch)), size = 50), G, n, dimnames = dimnames(counts))
+  ctr <- function(m) m[, "sp1"] - m[, "sp5"]   # no true difference between sp1 and sp5 (genes 7..G)
+  raw <- speciesStats(counts_b, species, method = "edgeR")
+  adj <- speciesStats(counts_b, species, method = "edgeR", covariates = cbind(batch = batch))
+  expect_gt(cor(ctr(raw$mean)[7:G], b_eff[7:G] / log(2)), 0.9)              # the batch leaks into the raw contrast
+  expect_lt(abs(cor(ctr(adj$mean)[7:G], b_eff[7:G])), 0.3)                  # and is removed by the covariate
+  expect_lt(mean((ctr(adj$mean)[7:G] / sqrt(adj$se[7:G, "sp1"]^2 + adj$se[7:G, "sp5"]^2))^2), 2)
+  ## edgeR standard errors: the species block of the inverse NB information, scaled by the QL dispersion
+  y <- edgeR::normLibSizes(edgeR::DGEList(counts_b))
+  X <- cbind(stats::model.matrix(~ 0 + factor(species)), batch = batch - mean(batch))
+  fit <- edgeR::glmQLFit(y, X, legacy = FALSE, prior.count = 0.125)
+  g <- 10; m <- exp(drop(X %*% fit$coefficients[g, ]) + as.matrix(fit$offset)[g, ])
+  V <- solve(crossprod(X, (m / (1 + rep_len(fit$dispersion, G)[g] * m)) * X))
+  vp <- if (!is.null(fit$var.post)) fit$var.post else fit$s2.post
+  expect_equal(unname(adj$se[g, ]), unname(sqrt(vp[g] * diag(V)[1:S]) / log(2)), tolerance = 1e-6)
+  ## limma route: same adjustment
+  Yb <- lengthNormalizeRNASeq(counts_b, lengthNormalization = "none", dataTransformation = "log2")
+  adj_l <- speciesStats(Yb, species, method = "limma", covariates = cbind(batch = batch))
+  expect_lt(abs(cor(ctr(adj_l$mean)[7:G], b_eff[7:G])), 0.3)
+  ## a covariate constant within every species is confounded with species
+  expect_error(speciesStats(counts_b, species, method = "edgeR", covariates = cbind(as.numeric(species %in% c("sp1", "sp2")))), "confounded")
+})
+
 test_that("phyloShiftGLS recovers the shift and is calibrated", {
   se <- speciesStats(counts, species, method = "edgeR")
   design <- cbind(1, as.numeric(tree$tip.label %in% c("sp3", "sp4"))); dimnames(design) <- list(tree$tip.label, c("(Intercept)", "cond"))
