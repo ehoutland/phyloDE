@@ -43,8 +43,22 @@ If left \code{NULL} (the default), an automatic parsing of species names with sa
 \item{model}{the phylogenetic model of the drift: \code{"BM"} (the default) or
 \code{"OUfixedRoot"}.}
 
+\item{prior}{\code{"factorized"} (the default) or \code{"mash"}, see Description.}
+
 \item{rho_prime_grid}{for the OU model, the values of \eqn{\rho'} of the OU
 drift patterns (the BM drift pattern is always included).}
+
+\item{shift_sd}{range of the shift standard deviations (log2 scale) of the factorized prior.}
+
+\item{n_shift}{number of shift sizes of the factorized prior (log-spaced over \code{shift_sd}).}
+
+\item{shared_shift_rate}{factorized prior: one shift rate for all branches (the
+default; the rate is then estimated mostly from the branches where shifts and
+drift are distinguishable, the short ones) or one rate per branch (more
+flexible when shifts concentrate on some branches, slightly anti-conservative
+in the package simulations).}
+
+\item{max_iter}{maximum number of EM iterations of the factorized prior.}
 
 \item{shift_ratios}{ratios of the shift variance to the drift variance (at the tips)
 of the shift patterns.}
@@ -59,7 +73,7 @@ to the drift variance of the drift-plus-noise patterns.}
 \item{trend}{if \code{TRUE} (the default), the moderation of the within-species
 variances allows for a mean-variance trend (\code{\link[limma]{squeezeVar}} with \code{covariate}).}
 
-\item{n_grid}{number of scales in the mash grid (log-spaced over the range chosen by \code{mash}).}
+\item{n_grid}{number of drift scales (factorized prior) or of scales of the mash grid.}
 
 \item{drift_prior}{pseudo-observations explained by the no-shift patterns only
 (null, drift, drift plus noise, identity, and shift patterns below
@@ -74,9 +88,9 @@ simulations with 4 to 7 species, for a loss of about 0.05 in power; \code{0}
 is the plain \code{mash} fit, which is anti-conservative with few species
 (realized 0.07-0.10 at nominal 0.05 on branches, 0.13-0.14 on genes with 4 species).}
 
-\item{fit_subset}{if not \code{NULL}, the number of (randomly chosen) genes used to
-estimate the mixture weights, which are then applied to all genes
-(faster for large data sets).}
+\item{fit_subset}{the number of (randomly chosen) genes used to estimate the
+prior, which is then applied to all genes. \code{NULL}: all genes for the mash
+prior, at most 5000 for the factorized prior.}
 
 \item{covariates}{optional sample-level covariates, see \code{\link{speciesStats}}
 (ignored if \code{object} is a \code{SpeciesStats} object).}
@@ -94,46 +108,53 @@ probability. Useful as a reference for what the tree-derived patterns add.}
 \value{
 An object of class \code{PhyloMash}, a list with
 \describe{
-\item{mash}{the \code{mash} fit.}
+\item{mash}{the \code{mash} fit (\code{prior = "mash"}).}
+\item{prior_fit}{the estimated factors (\code{prior = "factorized"}): shift rate(s),
+shift-size distribution, drift-scale distribution, drift-shape weights.}
 \item{branch_prob}{genes by testable branches matrix of posterior probabilities of a shift.}
 \item{shift_prob}{posterior probability of a shift on any branch.}
 \item{top_branch}{the branch with the highest posterior probability.}
 \item{pm_species}{genes by species matrix of posterior mean deviations from the across-species mean.}
 \item{species_means, se_species}{the species means and their (moderated) standard errors.}
-\item{pattern_weights}{the estimated prior weight of each pattern (summed over scales).}
+\item{pattern_weights}{the estimated prior weight of each pattern (summed over scales; mash prior),
+or the shift rates (factorized prior).}
 \item{branches}{the branch table (testable branches).}
 }
 }
 \description{
 Detect branch-specific shifts in expression (or accessibility) across
-species with replicates, using \code{\link[mashr]{mash}} on the species means.
-The species means of a gene are the sufficient statistics of its species-level
-effects; their deviations from the across-species mean are the "effects" of a
-mash analysis, and the prior on these effects is a mixture of scaled
-covariance patterns learned from all genes:
+species with replicates, by empirical Bayes on the species means. The
+deviations of a gene's species means from their across-species mean are
+modelled as sampling error (the standard errors of the species means, from
+the replicates) plus phylogenetic drift plus, possibly, one shift shared by
+all the species below one branch. The prior on drift and shifts is learned
+from all genes. Two priors are available:
 \itemize{
-\item "drift" patterns: no shift, the deviations follow the phylogenetic
-process (BM, or OU for several values of \eqn{\rho' = 1 - \rho}, see
-\code{\link{rhoFromAlpha}}), possibly plus species-specific
-non-phylogenetic variance (\code{noise_ratios}) or only such variance
-(\code{identity});
-\item "shift" patterns: BM drift plus a shift shared by all the species
-descending from one branch, with a shift variance equal to
-\code{shift_ratios} times the drift variance, or a pure shift.
+\item \code{prior = "factorized"} (the default): the prior weight of a
+component is a product of independent factors, \eqn{u(d)\, q(s)\, [1 - \epsilon]}
+without shift and \eqn{u(d)\, q(s)\, \epsilon_b\, h(v)} with a shift of
+variance \eqn{v} on branch \eqn{b}, where \eqn{s} is the drift variance (per
+unit tree height), \eqn{d} the drift shape (BM, OU for the values of
+\code{rho_prime_grid}, BM plus species-specific non-phylogenetic noise for the
+values of \code{noise_ratios}, pure noise if \code{identity}), \eqn{h} a
+distribution of shift sizes shared by all branches and \eqn{\epsilon_b} the
+shift rate of branch \eqn{b} (one rate for all branches if
+\code{shared_shift_rate}). The factors are estimated by EM. Because the
+distribution of drift scales is the same for shifted and unshifted genes,
+shifts cannot stand in for large drift (or the reverse), which, with few
+species, the free weights of the mash prior allow at almost no cost in
+likelihood; the Bayesian false discovery rate of \code{\link{callShifts}} is
+then close to its nominal level, and as powerful as an oracle that knows the
+population distributions of drift and shifts (package simulations with 4 and 7 species).
+\item \code{prior = "mash"}: a \code{\link[mashr]{mash}} mixture of scaled
+covariance patterns, each pattern and scale with its own weight: "drift"
+patterns (BM, OU, drift plus noise, identity) and "shift" patterns (BM drift
+plus a shift of variance \code{shift_ratios} times the drift variance, or a
+pure shift), with the \code{drift_prior} penalty. A gene carries a shift on
+branch \eqn{b} with the posterior weight of the shift patterns of \eqn{b} with
+a ratio of at least \code{min_shift_ratio}.
 }
-The within-species variance (replicates) gives the standard errors of the
-species means, moderated across genes with \code{\link[limma]{squeezeVar}}.
-The scale of the drift (the gene-wise phylogenetic variance) is integrated
-over the mash scale grid, so that no gene-wise phylogenetic parameter has to
-be estimated: the posterior weights over the patterns and scales are the
-empirical Bayes posterior on the gene-wise phylogenetic parameters.
-
-A gene carries a shift on branch \eqn{b} with posterior probability equal to
-the posterior weight of the shift patterns of \eqn{b} with a shift-to-drift
-ratio of at least \code{min_shift_ratio} (\code{branch_prob}); patterns with a
-smaller ratio are indistinguishable from drift and count as "no shift".
-See \code{\link{callShifts}} to call shifts at a given Bayesian false
-discovery rate.
+See \code{\link{callShifts}} to call shifts at a given Bayesian false discovery rate.
 }
 \seealso{
 \code{\link{callShifts}}, \code{\link{branchIndicators}}, \code{\link[mashr]{mash}}

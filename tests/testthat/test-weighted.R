@@ -38,7 +38,7 @@ test_that("speciesStatsWeighted feeds phyloMash", {
   st <- speciesStatsWeighted(counts, species)
   expect_s3_class(st, "SpeciesStats"); expect_equal(st$method, "weighted")
   expect_true(all(is.finite(st$se)))
-  pm <- phyloMash(st, tree, model = "BM", n_grid = 8)   # factorized prior
+  expect_warning(pm <- phyloMash(st, tree, model = "BM", n_grid = 8), "fitted on")   # factorized prior, small data
   expect_true(all(pm$top_branch[1:6] == "sp2"))
   expect_gt(mean(pm$branch_prob[1:6, "sp2"]), 0.6)
   expect_lt(mean(pm$shift_prob[13:G]), 0.1)

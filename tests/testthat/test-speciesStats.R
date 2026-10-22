@@ -47,12 +47,12 @@ test_that("phyloShiftGLS recovers the shift and is calibrated", {
 
 test_that("phyloMash accepts SpeciesStats input", {
   se <- speciesStats(counts, species, method = "edgeR")
-  pm <- phyloMash(se, tree, model = "BM", n_grid = 8)
+  expect_warning(pm <- phyloMash(se, tree, model = "BM", n_grid = 8), "fitted on")   # factorized prior, small data
   expect_s3_class(pm, "PhyloMash")
   expect_equal(pm$stats_method, "edgeR")
   expect_true(all(pm$branch_prob[1:5, "sp3"] > 0.9))
   expect_equal(dim(pm$dropout), c(G, S))
-  pm2 <- phyloMash(Y, tree, col_species = species, model = "BM", n_grid = 8)
+  expect_warning(pm2 <- phyloMash(Y, tree, col_species = species, model = "BM", n_grid = 8), "fitted on")
   expect_equal(pm2$stats_method, "limma")
   expect_true(all(pm2$branch_prob[1:5, "sp3"] > 0.9))
 })

@@ -2,34 +2,38 @@
 #'
 #' @description
 #' Detect branch-specific shifts in expression (or accessibility) across
-#' species with replicates, using \code{\link[mashr]{mash}} on the species means.
-#' The species means of a gene are the sufficient statistics of its species-level
-#' effects; their deviations from the across-species mean are the "effects" of a
-#' mash analysis, and the prior on these effects is a mixture of scaled
-#' covariance patterns learned from all genes:
+#' species with replicates, by empirical Bayes on the species means. The
+#' deviations of a gene's species means from their across-species mean are
+#' modelled as sampling error (the standard errors of the species means, from
+#' the replicates) plus phylogenetic drift plus, possibly, one shift shared by
+#' all the species below one branch. The prior on drift and shifts is learned
+#' from all genes. Two priors are available:
 #' \itemize{
-#' \item "drift" patterns: no shift, the deviations follow the phylogenetic
-#' process (BM, or OU for several values of \eqn{\rho' = 1 - \rho}, see
-#' \code{\link{rhoFromAlpha}}), possibly plus species-specific
-#' non-phylogenetic variance (\code{noise_ratios}) or only such variance
-#' (\code{identity});
-#' \item "shift" patterns: BM drift plus a shift shared by all the species
-#' descending from one branch, with a shift variance equal to
-#' \code{shift_ratios} times the drift variance, or a pure shift.
+#' \item \code{prior = "factorized"} (the default): the prior weight of a
+#' component is a product of independent factors, \eqn{u(d)\, q(s)\, [1 - \epsilon]}
+#' without shift and \eqn{u(d)\, q(s)\, \epsilon_b\, h(v)} with a shift of
+#' variance \eqn{v} on branch \eqn{b}, where \eqn{s} is the drift variance (per
+#' unit tree height), \eqn{d} the drift shape (BM, OU for the values of
+#' \code{rho_prime_grid}, BM plus species-specific non-phylogenetic noise for the
+#' values of \code{noise_ratios}, pure noise if \code{identity}), \eqn{h} a
+#' distribution of shift sizes shared by all branches and \eqn{\epsilon_b} the
+#' shift rate of branch \eqn{b} (one rate for all branches if
+#' \code{shared_shift_rate}). The factors are estimated by EM. Because the
+#' distribution of drift scales is the same for shifted and unshifted genes,
+#' shifts cannot stand in for large drift (or the reverse), which, with few
+#' species, the free weights of the mash prior allow at almost no cost in
+#' likelihood; the Bayesian false discovery rate of \code{\link{callShifts}} is
+#' then close to its nominal level, and as powerful as an oracle that knows the
+#' population distributions of drift and shifts (package simulations with 4 and 7 species).
+#' \item \code{prior = "mash"}: a \code{\link[mashr]{mash}} mixture of scaled
+#' covariance patterns, each pattern and scale with its own weight: "drift"
+#' patterns (BM, OU, drift plus noise, identity) and "shift" patterns (BM drift
+#' plus a shift of variance \code{shift_ratios} times the drift variance, or a
+#' pure shift), with the \code{drift_prior} penalty. A gene carries a shift on
+#' branch \eqn{b} with the posterior weight of the shift patterns of \eqn{b} with
+#' a ratio of at least \code{min_shift_ratio}.
 #' }
-#' The within-species variance (replicates) gives the standard errors of the
-#' species means, moderated across genes with \code{\link[limma]{squeezeVar}}.
-#' The scale of the drift (the gene-wise phylogenetic variance) is integrated
-#' over the mash scale grid, so that no gene-wise phylogenetic parameter has to
-#' be estimated: the posterior weights over the patterns and scales are the
-#' empirical Bayes posterior on the gene-wise phylogenetic parameters.
-#'
-#' A gene carries a shift on branch \eqn{b} with posterior probability equal to
-#' the posterior weight of the shift patterns of \eqn{b} with a shift-to-drift
-#' ratio of at least \code{min_shift_ratio} (\code{branch_prob}); patterns with a
-#' smaller ratio are indistinguishable from drift and count as "no shift".
-#' See \code{\link{callShifts}} to call shifts at a given Bayesian false
-#' discovery rate.
+#' See \code{\link{callShifts}} to call shifts at a given Bayesian false discovery rate.
 #'
 #' @inheritParams phylolmFit
 #' @param object a matrix of normalized log2 expression (genes by samples), or a
@@ -51,7 +55,16 @@
 #' @param identity if \code{TRUE} (the default), add a pure species-specific variance pattern.
 #' @param trend if \code{TRUE} (the default), the moderation of the within-species
 #' variances allows for a mean-variance trend (\code{\link[limma]{squeezeVar}} with \code{covariate}).
-#' @param n_grid number of scales in the mash grid (log-spaced over the range chosen by \code{mash}).
+#' @param prior \code{"factorized"} (the default) or \code{"mash"}, see Description.
+#' @param shift_sd range of the shift standard deviations (log2 scale) of the factorized prior.
+#' @param n_shift number of shift sizes of the factorized prior (log-spaced over \code{shift_sd}).
+#' @param shared_shift_rate factorized prior: one shift rate for all branches (the
+#' default; the rate is then estimated mostly from the branches where shifts and
+#' drift are distinguishable, the short ones) or one rate per branch (more
+#' flexible when shifts concentrate on some branches, slightly anti-conservative
+#' in the package simulations).
+#' @param max_iter maximum number of EM iterations of the factorized prior.
+#' @param n_grid number of drift scales (factorized prior) or of scales of the mash grid.
 #' @param drift_prior pseudo-observations explained by the no-shift patterns only
 #' (null, drift, drift plus noise, identity, and shift patterns below
 #' \code{min_shift_ratio}), as a fraction of the number of genes used to fit the
@@ -64,9 +77,9 @@
 #' simulations with 4 to 7 species, for a loss of about 0.05 in power; \code{0}
 #' is the plain \code{mash} fit, which is anti-conservative with few species
 #' (realized 0.07-0.10 at nominal 0.05 on branches, 0.13-0.14 on genes with 4 species).
-#' @param fit_subset if not \code{NULL}, the number of (randomly chosen) genes used to
-#' estimate the mixture weights, which are then applied to all genes
-#' (faster for large data sets).
+#' @param fit_subset the number of (randomly chosen) genes used to estimate the
+#' prior, which is then applied to all genes. \code{NULL}: all genes for the mash
+#' prior, at most 5000 for the factorized prior.
 #' @param patterns \code{"tree"} (the default): the drift and shift patterns described
 #' above; \code{"canonical"}: the data-agnostic patterns of \code{\link[mashr]{cov_canonical}}
 #' only (null, singletons, equal effects, simple heterogeneity, identity), as in
@@ -78,13 +91,16 @@
 #'
 #' @return An object of class \code{PhyloMash}, a list with
 #' \describe{
-#' \item{mash}{the \code{mash} fit.}
+#' \item{mash}{the \code{mash} fit (\code{prior = "mash"}).}
+#' \item{prior_fit}{the estimated factors (\code{prior = "factorized"}): shift rate(s),
+#' shift-size distribution, drift-scale distribution, drift-shape weights.}
 #' \item{branch_prob}{genes by testable branches matrix of posterior probabilities of a shift.}
 #' \item{shift_prob}{posterior probability of a shift on any branch.}
 #' \item{top_branch}{the branch with the highest posterior probability.}
 #' \item{pm_species}{genes by species matrix of posterior mean deviations from the across-species mean.}
 #' \item{species_means, se_species}{the species means and their (moderated) standard errors.}
-#' \item{pattern_weights}{the estimated prior weight of each pattern (summed over scales).}
+#' \item{pattern_weights}{the estimated prior weight of each pattern (summed over scales; mash prior),
+#' or the shift rates (factorized prior).}
 #' \item{branches}{the branch table (testable branches).}
 #' }
 #'
@@ -140,17 +156,24 @@ phyloMash <- function(object, phy, col_species = NULL, model = c("BM", "OUfixedR
     for (rp in rho_prime_grid) drift_vcv[[paste0("OU", rp)]] <- ape::vcv(rescale_tree(phylolm::transf.branch.lengths(tr_u, "OUfixedRoot", parameters = list(alpha = rho_prime_inv(rp, 1, ab)))$tree))
   }
   if (prior == "factorized") {
-    shapes <- lapply(drift_vcv, function(Cd) { x <- L %*% Cd %*% t(L); (x + t(x)) / 2 })
+    ## drift shapes: BM (and OU) drift, BM drift plus species-specific (non-phylogenetic) noise, pure noise; they share the
+    ## drift-scale distribution. Without the noise shapes, species-level variance not covered by the standard errors (outlier
+    ## libraries, unmodelled batch) can only be absorbed by shifts, and the fitted shift rate goes to one.
+    sh <- c(drift_vcv, setNames(lapply(noise_ratios, function(r) drift_vcv$BM + r * diag(S)), paste0("BM_noise", noise_ratios)))
+    if (identity) sh$identity <- diag(S)
+    shapes <- lapply(sh, function(Cd) { x <- L %*% Cd %*% t(L); (x + t(x)) / 2 })
     dirs <- lapply(seq_along(labels), function(b) as.vector(L %*% Zs[, b]))
     ## drift variance per unit tree height: from a hundredth of the smallest standard error to four times the largest squared deviation
     s_hi <- 4 * stats::quantile(rowMeans(Bhat^2), 0.999) / mean(diag(shapes$BM)); s_lo <- (min(Shat) / 10)^2 / mean(diag(shapes$BM))
     s_grid <- c(0, exp(seq(log(s_lo), log(s_hi), length.out = n_grid)))
     v_grid <- exp(seq(log(shift_sd[1]^2), log(shift_sd[2]^2), length.out = n_shift))
     data_fit <- data
-    if (!is.null(fit_subset) && fit_subset < G) {
-      sub <- sort(sample.int(G, fit_subset))
+    n_fit <- if (is.null(fit_subset)) min(G, 5000) else min(G, fit_subset)
+    if (n_fit < G) {
+      sub <- sort(sample.int(G, n_fit))
       data_fit <- mashr::mash_set_data(data$Bhat[sub, , drop = FALSE], data$Shat[sub, , drop = FALSE], V = data$V)
     }
+    if (n_fit < 1000) warning("The factorized prior is fitted on ", n_fit, " genes only: its shift rate may be poorly estimated (it has more components than genes).")
     fit <- fit_factorized_prior(data_fit, shapes, dirs, s_grid, v_grid, shared = shared_shift_rate, max_iter = max_iter)
     post <- factorized_posterior(data, fit)
     branch_prob <- post$branch_prob; dimnames(branch_prob) <- list(stats$genes, labels)
@@ -329,13 +352,13 @@ fit_factorized_prior <- function(data, shapes, dirs, s_grid, v_grid, shared = TR
   comp$b <- ifelse(comp$j == 0, 0L, (comp$j - 1L) %/% nv + 1L); comp$v <- ifelse(comp$j == 0, 0L, (comp$j - 1L) %% nv + 1L)
   U <- lapply(seq_len(nrow(comp)), function(i) { x <- s_grid[comp$s[i]] * shapes[[comp$d[i]]]
     if (comp$b[i] > 0) x <- x + v_grid[comp$v[i]] * tcrossprod(dirs[[comp$b[i]]]); (x + t(x)) / 2 })
-  lik <- exp(mashr:::calc_relative_lik_matrix(data, U)$loglik_matrix); tl <- t(lik)
+  lik <- exp(mashr:::calc_relative_lik_matrix(data, U)$loglik_matrix)
   u <- rep(1 / nd, nd); q <- rep(1 / ns, ns); e <- c(0.9, rep(0.1 / nb, nb)); h <- rep(1 / nv, nv)
   pi_of <- function() u[comp$d] * q[comp$s] * e[comp$b + 1L] * ifelse(comp$b == 0, 1, h[pmax(comp$v, 1L)])
   ll_old <- -Inf
   for (it in seq_len(max_iter)) {
     pic <- pi_of(); f <- as.vector(lik %*% pic); ll <- sum(log(f))
-    cs <- pic * as.vector(tl %*% (1 / f)) / nrow(lik)    # mean responsibilities per component
+    cs <- pic * as.vector(crossprod(lik, 1 / f)) / nrow(lik)    # mean responsibilities per component
     u <- as.vector(tapply(cs, comp$d, sum)); q <- as.vector(tapply(cs, comp$s, sum))
     e <- as.vector(tapply(cs, comp$b, sum)); if (shared) e <- c(e[1], rep(sum(e[-1]) / nb, nb))
     h <- as.vector(tapply(cs[comp$b > 0], comp$v[comp$b > 0], sum)); h <- h / sum(h)
