@@ -345,27 +345,44 @@ branch_prob_from_weights <- function(w, tag, labels) {
 }
 
 ## Factorized prior: component = (drift shape d, drift scale s) x {no shift, shift on branch b with variance v};
-## pi = u[d] q[s] (e0 | e[b] h[v]). Fitted by EM (product-form mixture: each factor is the marginal of the responsibilities).
-fit_factorized_prior <- function(data, shapes, dirs, s_grid, v_grid, shared = TRUE, max_iter = 1500, tol = 1e-9) {
+## pi = u[d] q[s] (e0 | e[b] h[v]). Maximum likelihood by EM (product-form mixture: each factor is the marginal of the
+## responsibilities), accelerated by SQUAREM (Varadhan & Roland 2008), with a fallback to plain EM steps.
+fit_factorized_prior <- function(data, shapes, dirs, s_grid, v_grid, shared = TRUE, max_iter = 1500, tol = 1e-10) {
   nd <- length(shapes); ns <- length(s_grid); nb <- length(dirs); nv <- length(v_grid)
   comp <- expand.grid(d = seq_len(nd), s = seq_len(ns), j = 0:(nb * nv))
   comp$b <- ifelse(comp$j == 0, 0L, (comp$j - 1L) %/% nv + 1L); comp$v <- ifelse(comp$j == 0, 0L, (comp$j - 1L) %% nv + 1L)
   U <- lapply(seq_len(nrow(comp)), function(i) { x <- s_grid[comp$s[i]] * shapes[[comp$d[i]]]
     if (comp$b[i] > 0) x <- x + v_grid[comp$v[i]] * tcrossprod(dirs[[comp$b[i]]]); (x + t(x)) / 2 })
-  lik <- exp(mashr:::calc_relative_lik_matrix(data, U)$loglik_matrix)
-  u <- rep(1 / nd, nd); q <- rep(1 / ns, ns); e <- c(0.9, rep(0.1 / nb, nb)); h <- rep(1 / nv, nv)
-  pi_of <- function() u[comp$d] * q[comp$s] * e[comp$b + 1L] * ifelse(comp$b == 0, 1, h[pmax(comp$v, 1L)])
-  ll_old <- -Inf
-  for (it in seq_len(max_iter)) {
-    pic <- pi_of(); f <- as.vector(lik %*% pic); ll <- sum(log(f))
-    cs <- pic * as.vector(crossprod(lik, 1 / f)) / nrow(lik)    # mean responsibilities per component
+  lik <- exp(mashr:::calc_relative_lik_matrix(data, U)$loglik_matrix); G <- nrow(lik)
+  blocks <- c(rep("u", nd), rep("q", ns), rep("e", nb + 1), rep("h", nv))
+  unpack <- function(th) list(u = th[blocks == "u"], q = th[blocks == "q"], e = th[blocks == "e"], h = th[blocks == "h"])
+  pi_of <- function(p) p$u[comp$d] * p$q[comp$s] * p$e[comp$b + 1L] * ifelse(comp$b == 0, 1, p$h[pmax(comp$v, 1L)])
+  loglik <- function(th) sum(log(as.vector(lik %*% pi_of(unpack(th)))))
+  em <- function(th) {
+    p <- unpack(th); pic <- pi_of(p); f <- as.vector(lik %*% pic)
+    cs <- pic * as.vector(crossprod(lik, 1 / f)) / G
     u <- as.vector(tapply(cs, comp$d, sum)); q <- as.vector(tapply(cs, comp$s, sum))
     e <- as.vector(tapply(cs, comp$b, sum)); if (shared) e <- c(e[1], rep(sum(e[-1]) / nb, nb))
     h <- as.vector(tapply(cs[comp$b > 0], comp$v[comp$b > 0], sum)); h <- h / sum(h)
-    if (ll - ll_old < tol * abs(ll)) break
-    ll_old <- ll
+    c(u, q, e, h) }
+  th <- c(rep(1 / nd, nd), rep(1 / ns, ns), c(0.9, rep(0.1 / nb, nb)), rep(1 / nv, nv))
+  ll <- loglik(th); n_em <- 0
+  while (n_em < max_iter) {
+    th1 <- em(th); th2 <- em(th1); n_em <- n_em + 2
+    r <- th1 - th; v <- th2 - th1 - r
+    if (sum(v^2) < 1e-30) { th_new <- th2; ll_new <- loglik(th2) } else {
+      alpha <- min(-1, -sqrt(sum(r^2) / sum(v^2)))
+      thp <- th - 2 * alpha * r + alpha^2 * v
+      if (all(thp > 0)) { thp <- em(thp); n_em <- n_em + 1; ll_p <- loglik(thp) } else ll_p <- -Inf
+      ll2 <- loglik(th2)
+      if (is.finite(ll_p) && ll_p >= ll2) { th_new <- thp; ll_new <- ll_p } else { th_new <- th2; ll_new <- ll2 }
+    }
+    converged <- abs(ll_new - ll) < tol * abs(ll) && max(abs(th_new - th)) < 1e-6
+    th <- th_new; ll <- ll_new
+    if (converged) break
   }
-  list(comp = comp, U = U, pi = pi_of(), u = u, q = q, e = e, h = h, loglik = ll, iter = it)
+  p <- unpack(th)
+  list(comp = comp, U = U, pi = pi_of(p), u = p$u, q = p$q, e = p$e, h = p$h, loglik = ll, iter = n_em)
 }
 
 ## Posterior shift probabilities and posterior mean contrasts for all genes, in chunks
